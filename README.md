@@ -1,81 +1,254 @@
 # codex-configure
 
-`codex-configure` is a small terminal launcher for switching stock Codex clients between an existing OpenAI setup and U-M GPT Toolkit.
+`codex-configure` is a small terminal launcher for people who use both the Codex CLI and Codex in the ChatGPT desktop app. It lets you choose between:
 
-The first executable prototype targets macOS and Linux. It preserves the user's original `config.toml`, stores tool-owned profiles under `$CODEX_HOME/codex-configure/profiles/`, activates the selected environment atomically, and launches Codex Desktop or the Codex CLI.
+- your normal OpenAI account; and
+- U-M GPT Toolkit through its OpenAI / Azure route.
 
-An environment may describe:
+The launcher uses the same Codex home, tasks, settings, skills, and plugins in both environments. It preserves your existing OpenAI login and original `config.toml`, stores the U-M key in a protected local file, and switches the active provider before starting the client you choose.
 
-- a Codex model provider and default model;
-- an optional generated model catalog;
-- a reference to provider-specific credentials;
-- client launch and diagnostic behavior.
+## Before you begin
 
-The tool should leave shared Codex state such as tasks, history, skills, plugins, memories, and MCP configuration in place. Configuration changes must be inspectable, reversible, and atomic. Secrets must not be copied into ordinary profile files, logs, or project artifacts.
+You need all of the following:
 
-## Install and run
+- an OpenAI account that can use Codex;
+- a U-M GPT Toolkit API key assigned to you;
+- the Codex CLI;
+- the ChatGPT desktop app;
+- Python 3.11 or newer; and
+- Git, to download and update this project.
+
+This project currently supports:
+
+- macOS on Apple silicon, using the current ChatGPT macOS app; and
+- the Linux distributions supported by the current ChatGPT Linux preview: Ubuntu 24.04 or 26.04, Debian 13, and Fedora 43 or 44, on x64 or ARM64.
+
+Do not share a U-M key or commit it to this repository. Each person should use their own key.
+
+## macOS setup
+
+### 1. Install and sign in to Codex
+
+Install the [Codex CLI](https://learn.chatgpt.com/docs/codex/cli):
 
 ```bash
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
+```
+
+Open a new Terminal window, run `codex`, and choose **Sign in with ChatGPT** on the first run.
+
+Download and install the [ChatGPT desktop app for macOS](https://learn.chatgpt.com/docs/app), move it to `/Applications`, and sign in with the same OpenAI account.
+
+### 2. Check Python and Git
+
+```bash
+python3 --version
+git --version
+```
+
+Python must report 3.11 or newer. If either command is missing:
+
+- install Python from [python.org](https://www.python.org/downloads/macos/); and
+- install Apple's command-line tools for Git with `xcode-select --install`.
+
+If you already use Homebrew, `brew install python git` is also sufficient.
+
+Continue with [Install codex-configure](#install-codex-configure).
+
+## Linux setup
+
+The ChatGPT Linux app is currently a preview. Use an officially supported distribution and download the matching `.deb` or `.rpm` package from the [ChatGPT Linux installation guide](https://learn.chatgpt.com/docs/linux/linux-app).
+
+### 1. Install system prerequisites and the desktop app
+
+On Ubuntu or Debian:
+
+```bash
+sudo apt update
+sudo apt install python3 python3-venv git
+cd ~/Downloads
+sudo apt install ./chatgpt_amd64.deb
+```
+
+On an ARM64 machine, install `./chatgpt_arm64.deb` instead.
+
+On Fedora:
+
+```bash
+sudo dnf install python3 git
+cd ~/Downloads
+sudo dnf install ./chatgpt.x86_64.rpm
+```
+
+On an ARM64 machine, install `./chatgpt.aarch64.rpm` instead.
+
+### 2. Install and sign in to Codex
+
+Install the [Codex CLI](https://learn.chatgpt.com/docs/codex/cli):
+
+```bash
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
+```
+
+Open a new terminal, run `codex`, and choose **Sign in with ChatGPT** on the first run. Then run `chatgpt` and sign in to the desktop app.
+
+Fully quit the CLI and desktop app before continuing.
+
+## Install codex-configure
+
+Choose a convenient directory, then clone and install the project into its own Python environment:
+
+```bash
+cd ~
+git clone https://github.com/cab938/codex-configure.git
+cd codex-configure
 python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -e .
-codex-configure
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -e .
 ```
 
-For a configuration-only run that does not start Codex:
+The `.venv` directory belongs only to this project. It does not replace your system Python or either Codex client.
+
+## Add your U-M key
+
+The default Codex home is `~/.codex`. Create the launcher directory and its private credential file:
 
 ```bash
-codex-configure --prepare-only
+mkdir -p ~/.codex/codex-configure
+chmod 700 ~/.codex/codex-configure
+touch ~/.codex/codex-configure/.env
+chmod 600 ~/.codex/codex-configure/.env
+nano ~/.codex/codex-configure/.env
 ```
 
-`--prepare-only` still refuses to switch while a Codex CLI, ChatGPT, or Codex Desktop process is running. Inspect the current installation without changing it, or restore OpenAI without launching a client, with:
+Add one line, replacing the placeholder with your own key:
+
+```dotenv
+UMICH_TOOLKIT_API_KEY=YOUR_UMICH_TOOLKIT_KEY
+```
+
+In `nano`, press Control-O, Enter, then Control-X to save and exit.
+
+If you use a custom `CODEX_HOME`, put the file at `$CODEX_HOME/codex-configure/.env` instead. The launcher also accepts `UMICH_TOOLKIT_API_KEY` from the current shell or a different private file supplied with `--env-file PATH`.
+
+## Launch Codex
+
+First, fully quit the ChatGPT desktop app and exit every running Codex CLI session. Then run:
 
 ```bash
-codex-configure doctor
-codex-configure restore
+cd ~/codex-configure
+.venv/bin/codex-configure
 ```
 
-`restore` uses the maintained OpenAI base, including non-routing preferences that ChatGPT has written since installation. `restore --original` instead uses the immutable `config.toml` captured on the first run.
+The launcher asks you to choose an environment:
 
-Use `--codex-home PATH` for an isolated or non-default Codex home. U-M authentication is resolved in this order:
+1. **OpenAI** keeps your normal OpenAI login and moves directly to the client choice.
+2. **U-M GPT Toolkit** shows the OpenAI / Azure provider, lets you select one or more available models, and asks which selected model should be the default.
 
-1. `UMICH_TOOLKIT_API_KEY` in the launch environment;
-2. a private file supplied with `--env-file PATH`;
-3. `$CODEX_HOME/codex-configure/.env` (normally `~/.codex/codex-configure/.env`).
+Finally, choose **Codex Desktop** or **Codex CLI**. The launcher prints the environment and profile directory it activated, then starts that client.
 
-The standard file contains `UMICH_TOOLKIT_API_KEY=...`, must have mode `0600` on macOS and Linux, and is excluded from profiles and backups. The value is never written into a profile, catalog, state file, active `config.toml`, or diagnostic message.
+Run the same command again whenever you want to:
 
-On macOS, the launcher uses the executable inside `ChatGPT.app` so the U-M environment reaches the child process. It checks `/Applications` and the current user's `Applications` directory. If ChatGPT is installed elsewhere, set `CODEX_DESKTOP_COMMAND` to its executable path; a LaunchServices-only `open -a` fallback is not accepted for U-M because it cannot reliably carry the credential.
+- switch between OpenAI and U-M;
+- change the U-M models shown in Codex;
+- change the default U-M model; or
+- start the other client.
 
-## Interaction
+Always quit both Codex clients before switching. The launcher will refuse to overwrite the active configuration while it detects a Codex or ChatGPT process.
 
-OpenAI proceeds directly from environment selection to the Desktop/CLI launch choice and restores the preserved OpenAI configuration.
+## What the launcher changes
 
-U-M GPT Toolkit shows the single `OpenAI / Azure` provider, then a multi-select list of models recognized by both the U-M alias endpoint and the installed Codex catalog. The user may enter individual numbers, ranges such as `1-3`, or `all`, and then chooses one selected model as the default. Selections persist for later runs.
+On its first run, `codex-configure`:
 
-Immediately before launch, the tool prints the environment, the shared profile directory, and the active profile path:
+- preserves the original configuration at `~/.codex/codex-configure/base/original-config.toml`;
+- maintains a shared OpenAI base configuration;
+- creates profiles under `~/.codex/codex-configure/profiles/`; and
+- records a last-known-good configuration and recovery state.
 
-```text
-Environment: U-M GPT Toolkit / OpenAI / Azure
-Profiles directory: /home/USER/.codex/codex-configure/profiles
-Active profile: /home/USER/.codex/codex-configure/profiles/umich
-Launching Codex Desktop...
+It does **not** replace `~/.codex/auth.json` or your OpenAI login. The U-M key remains in the mode-`0600` `.env` file and is passed only to a U-M Codex process. Unrelated Codex settings written by the desktop app are retained; an unexpected external change to provider-routing keys is rejected instead of overwritten.
+
+Tasks and history remain shared. A resumed task uses whichever environment is active at that moment, even if the task originally used the other provider. Select the intended environment before resuming an existing task.
+
+## Check or recover the setup
+
+After at least one successful launcher run, inspect the active configuration and recovery files without changing them:
+
+```bash
+cd ~/codex-configure
+.venv/bin/codex-configure doctor
 ```
 
-The U-M catalog is a selectable allowlist, not an entitlement claim. Models are marked `verified` only after a recorded canary; other U-M-listed models remain labeled `listed`. Stock Desktop picker visibility is still an explicit compatibility check.
+Restore the maintained OpenAI configuration without launching a client:
 
-## Documentation
+```bash
+.venv/bin/codex-configure restore
+```
 
-- [Design](docs/design.md)
-- [Project and runtime layout](docs/layout.md)
-- [U-M Portkey capability investigation](docs/umich-portkey-investigation.md)
+Restore the immutable `config.toml` captured on the very first run:
 
-## Current scope
+```bash
+.venv/bin/codex-configure restore --original
+```
 
-The prototype supports an existing OpenAI-authenticated installation and one U-M GPT Toolkit route, `OpenAI / Azure`. AWS Bedrock, Google, local providers, and Portkey control-plane management are deliberately excluded. The launcher reads the U-M key from the protected credential file and supplies it through the provider-specific `x-portkey-api-key` environment header without replacing the user's OpenAI credential.
+Both restore commands require the CLI and desktop app to be closed. A configuration-only switch is also available:
 
-The tool adopts non-routing changes that ChatGPT writes while an environment is active, such as Desktop preferences, plugins, and trusted projects. It still refuses to overwrite an external change to the active model/provider routing. The first-run configuration remains preserved at `$CODEX_HOME/codex-configure/base/original-config.toml`.
+```bash
+.venv/bin/codex-configure --prepare-only
+```
 
-Every promotion records a rollback pair under `$CODEX_HOME/codex-configure/recovery/` before replacing the live file. A later invocation automatically rolls back an interrupted partial promotion or completes one whose config and state were both committed. `doctor` reports hash consistency, required snapshots, credential-file permissions, an incomplete transaction, and active clients without mutating the runtime. All relevant Codex CLI and Desktop clients must be closed before any switch or restore.
+## Update codex-configure
 
-Tasks remain shared across environments, but the active environment controls the next resumed turn. In the stock CLI canary, an OpenAI/Sol task resumed successfully after switching to U-M, and Codex applied U-M/Terra while warning about the model change. Select the intended environment before resuming an existing task; the task does not stay pinned to its original provider.
+```bash
+cd ~/codex-configure
+git pull --ff-only
+.venv/bin/python -m pip install -e .
+```
+
+Your key, profiles, and backups are stored under `CODEX_HOME`, not in the cloned repository, so updating the checkout does not replace them.
+
+## Troubleshooting
+
+### "Codex or ChatGPT is running"
+
+Quit the ChatGPT app completely, not just its window, and exit all Codex terminals. On macOS use **ChatGPT > Quit ChatGPT** or Command-Q. Then run the launcher again.
+
+### "Could not find the Codex CLI on PATH"
+
+Open a new terminal after installing the CLI and check:
+
+```bash
+command -v codex
+codex --version
+```
+
+### "Could not find Codex Desktop"
+
+On macOS, keep `ChatGPT.app` in `/Applications` or `~/Applications`. On Linux, install the official package so the `chatgpt` command is available. For a nonstandard installation, set `CODEX_DESKTOP_COMMAND` to the actual executable before running the launcher.
+
+### U-M credential permission error
+
+```bash
+chmod 700 ~/.codex/codex-configure
+chmod 600 ~/.codex/codex-configure/.env
+```
+
+### Linux virtual machine graphics errors
+
+Some virtual machines need Chromium software rendering. This launch override worked in the project's test VM:
+
+```bash
+CODEX_DESKTOP_COMMAND='chatgpt --use-angle=swiftshader' .venv/bin/codex-configure
+```
+
+Use this only for a VM that fails during normal desktop launch. For Wayland-specific behavior, see the [official Linux app guidance](https://learn.chatgpt.com/docs/linux/linux-app).
+
+## Project documentation
+
+- [Architecture and safety model](docs/architecture.md)
+
+## Current limits
+
+- Only OpenAI and the U-M GPT Toolkit OpenAI / Azure route are exposed.
+- U-M's advertised catalog is not proof that every listed model is enabled for every key. Terra is marked `verified`; other discovered models are marked `listed` until they have a recorded canary.
+- Only one environment can be active in a given `CODEX_HOME` at a time.
+- Managed Codex settings supplied by an organization can override the user configuration and are not changed by this tool.
