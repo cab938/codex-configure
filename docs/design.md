@@ -1,6 +1,6 @@
 # Design
 
-Status: first OpenAI/U-M prototype implemented; broader provider and recovery work remains design scope.
+Status: first OpenAI/U-M prototype and crash-recoverable activation implemented; broader provider work remains design scope.
 
 ## Implemented interaction
 
@@ -184,32 +184,34 @@ If the gateway contract makes credential swapping unavoidable, it must be a clea
 
 ### 6. Activate transactionally
 
-An activation should follow this sequence:
+An activation follows this sequence:
 
 1. Acquire a per-home lock.
 2. Identify the current environment and detect external edits.
-3. Require the desktop client and App Server to exit, offering a graceful quit rather than killing them silently.
+3. Refuse to continue until detected Codex CLI, App Server, and ChatGPT/Desktop clients have exited; never kill them silently.
 4. Refresh the selected catalog when requested or required.
 5. Materialize and validate the candidate configuration in a temporary file.
-6. Save a last-known-good non-secret configuration snapshot.
-7. Atomically replace the active configuration.
-8. Record the active environment, hashes, and timestamps without secrets.
+6. Save the current consistent config/state pair and a transaction marker.
+7. Atomically replace the active configuration and state.
+8. Save the new consistent pair as last known good, then clear the marker.
 9. Launch the requested client.
 
-If validation or promotion fails, the prior active configuration must remain usable.
+If the process stops between the two live-file writes, the next invocation restores the saved prior pair. If both writes completed, it finalizes that target as last known good. File replacements and transaction cleanup are synced to their parent directories where the platform supports it.
 
 ### 7. Provide interactive and scriptable interfaces
 
 The implemented terminal interface starts with:
 
 ```text
-Codex environments
+Choose environment
 
-* OpenAI              active   ChatGPT login available
-  U-M GPT Toolkit     ready    catalog: 6 models
+  1. OpenAI
+  2. U-M GPT Toolkit
+
+> [1]
 ```
 
-The initial executable is an interactive launcher. It also provides `--prepare-only` and `--codex-home PATH` for isolated preparation and testing. Scriptable `list`, `doctor`, `use`, and `restore` commands remain future work:
+The initial executable is an interactive launcher. It also provides `--prepare-only` and `--codex-home PATH` for isolated preparation and testing. Read-only `doctor` and guarded `restore` commands are implemented; scriptable `list`, `use`, and explicit `launch` commands remain future work:
 
 ```text
 codex-configure list
@@ -218,6 +220,7 @@ codex-configure use umich
 codex-configure launch umich --desktop
 codex-configure launch umich --cli
 codex-configure restore
+codex-configure restore --original
 ```
 
 The proof of concept may be a portable shell program. A broadly distributed macOS/Linux tool will probably be safer as a single executable because structured TOML/JSON handling, cross-platform locking, native credential stores, and application lifecycle management are difficult to implement reliably in shell alone.
@@ -273,9 +276,13 @@ The initial OpenAI/U-M prototype is successful when it can demonstrate all of th
 8. Complete a small request through the intended U-M endpoint and confirm the selected model reaches that environment.
 9. Switch back and successfully use the original OpenAI authentication.
 10. Launch the CLI and Desktop into the selected environment.
-11. Retain the last-known-good state after an invalid config or failed catalog refresh.
+11. Retain or recover the last-known-good state after an invalid config, failed catalog refresh, or interrupted promotion.
 
-Resuming a task created under one provider after another environment is activated also needs an explicit canary. The design expects stable provider identifiers and shared state to help, but this behavior must not be promised before it is exercised on stock clients.
+### Cross-provider resume canary
+
+On 2026-08-26, Codex CLI 0.150.0 created a persisted task with the OpenAI provider and `gpt-5.6-sol`. After `codex-configure` activated U-M with `gpt-5.6-terra`, resuming that task succeeded and produced the requested response. Codex emitted a model-change warning and recorded the resumed turn with `model_provider_id = "umich-toolkit"` and `model = "gpt-5.6-terra"`.
+
+Task history is therefore shared, but provider affinity is not preserved across a switch. The currently active environment controls a resumed turn. Users should select the intended environment before resuming an existing task. The canary then restored OpenAI, confirmed `Logged in using ChatGPT`, passed a fresh OpenAI request, and left `doctor` healthy.
 
 ## Decisions already made
 
@@ -306,7 +313,7 @@ Resuming a task created under one provider after another environment is activate
 
 ### Profile and state semantics
 
-- Must old tasks resume through their original provider when another environment is active?
+- Should a later version warn interactively when a provider switch may affect resumed tasks, beyond documenting that the active environment controls the next turn?
 - How should the tool reconcile edits to model-routing keys made directly in Desktop while an environment is active?
 
 Per-environment skills and MCP server visibility is deferred. It should be reconsidered only after the model-only environment boundary has been exercised.
@@ -315,5 +322,5 @@ Per-environment skills and MCP server visibility is deferred. It should be recon
 
 - Is the prototype allowed to require a minimum Codex version?
 - Is a simple numbered terminal menu sufficient, or is a richer TUI required?
-- Which exact macOS and Linux Desktop launch targets must be discovered?
+- Which nonstandard macOS and Linux Desktop installation paths should be discovered beyond the implemented ChatGPT app locations and command override?
 - What evidence and user-facing warning are sufficient when the gateway lists a model that later rejects a request because of account or cost policy?

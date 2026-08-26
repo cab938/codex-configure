@@ -12,7 +12,14 @@ from unittest import mock
 import tomlkit
 
 from codex_configure.catalog import CatalogResult, ModelChoice
-from codex_configure.cli import Console, Launcher, parse_model_selection, run_interactive
+from codex_configure.cli import (
+    Console,
+    Launcher,
+    parse_model_selection,
+    run_doctor,
+    run_interactive,
+    run_restore,
+)
 from codex_configure.errors import UserFacingError
 from codex_configure.runtime import ConfigManager
 
@@ -64,13 +71,17 @@ class FakeLauncher:
     def __init__(self) -> None:
         self.validated: list[str] = []
         self.launches: list[tuple[list[str], dict[str, str]]] = []
+        self.stopped_checks = 0
 
-    def validate(self, target: str) -> list[str]:
+    def validate(self, target: str, requires_environment: bool = False) -> list[str]:
         self.validated.append(target)
         return [f"fake-{target}"]
 
-    def ensure_desktop_stopped(self) -> None:
-        return None
+    def ensure_clients_stopped(self) -> None:
+        self.stopped_checks += 1
+
+    def running_clients(self) -> list[str]:
+        return []
 
     def launch(self, command: list[str], extra_environment: dict[str, str]) -> int:
         self.launches.append((command, extra_environment))
@@ -107,6 +118,7 @@ class CliFlowTests(unittest.TestCase):
         self.assertNotIn("Choose models", text)
         self.assertIn(f"Profiles directory: {home / 'codex-configure' / 'profiles'}", text)
         self.assertEqual(launcher.validated, ["cli"])
+        self.assertEqual(launcher.stopped_checks, 1)
         self.assertEqual(launcher.launches, [(["fake-cli"], {})])
         self.assertEqual(
             (home / "config.toml").read_text(encoding="utf-8"),
@@ -131,11 +143,12 @@ class CliFlowTests(unittest.TestCase):
         )
 
         self.assertEqual(result, 0)
-        catalog_path = home / "codex-configure" / "catalogs" / "umich-openai-azure.json"
+        active = tomlkit.parse((home / "config.toml").read_text(encoding="utf-8"))
+        catalog_path = Path(str(active["model_catalog_json"]))
+        self.assertTrue(catalog_path.name.startswith("umich-openai-azure-"))
         catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
         self.assertEqual([entry["slug"] for entry in catalog["models"]], ["gpt-5.6-sol", "gpt-5.6-luna"])
 
-        active = tomlkit.parse((home / "config.toml").read_text(encoding="utf-8"))
         self.assertEqual(active["model"], "gpt-5.6-luna")
         self.assertEqual(active["model_provider"], "umich-toolkit")
         self.assertTrue(active["features"]["example"])
@@ -146,6 +159,7 @@ class CliFlowTests(unittest.TestCase):
         )
         self.assertNotIn("test-secret", (home / "config.toml").read_text(encoding="utf-8"))
         self.assertEqual(launcher.validated, ["desktop"])
+        self.assertEqual(launcher.stopped_checks, 1)
         self.assertEqual(launcher.launches[0][1], {"UMICH_TOOLKIT_API_KEY": "test-secret"})
         text = output.getvalue()
         location = text.index(f"Profiles directory: {manager.paths.profiles}")
@@ -207,6 +221,23 @@ class CliFlowTests(unittest.TestCase):
         self.assertEqual(list(profile["selected_models"]), ["gpt-5.6-sol", "gpt-5.6-luna"])
         self.assertIn("[ ] 2. GPT-5.6 Terra", second_output.getvalue())
 
+    def test_prepare_only_still_checks_for_running_clients(self) -> None:
+        temporary, home = self.make_home()
+        self.addCleanup(temporary.cleanup)
+        launcher = FakeLauncher()
+
+        result = run_interactive(
+            codex_home=home,
+            console=Console(io.StringIO("1\n1\n"), io.StringIO()),
+            environ={},
+            prepare_only=True,
+            launcher=launcher,
+        )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(launcher.validated, [])
+        self.assertEqual(launcher.stopped_checks, 1)
+
     def test_openai_restore_adopts_desktop_changes_without_losing_original(self) -> None:
         temporary, home = self.make_home()
         self.addCleanup(temporary.cleanup)
@@ -263,6 +294,180 @@ class CliFlowTests(unittest.TestCase):
 
         self.assertEqual((home / "config.toml").read_text(encoding="utf-8"), changed)
 
+    def test_interrupted_switch_rolls_back_on_next_start(self) -> None:
+        temporary, home = self.make_home()
+        self.addCleanup(temporary.cleanup)
+        manager = ConfigManager(home)
+        service = FakeCatalogService()
+        original = (home / "config.toml").read_text(encoding="utf-8")
+        manager.initialize()
+        real_atomic_write = manager._atomic_write
+
+        def interrupt_before_state(path: Path, text: str) -> None:
+            if path == manager.paths.state and manager.paths.transaction.exists():
+                raise RuntimeError("simulated interruption")
+            real_atomic_write(path, text)
+
+        with mock.patch.object(manager, "_atomic_write", side_effect=interrupt_before_state):
+            with self.assertRaisesRegex(RuntimeError, "simulated interruption"):
+                manager.activate_umich(
+                    list(service.result.models),
+                    "gpt-5.6-terra",
+                    service.build_selected_catalog(list(service.result.models)),
+                    service.result.source,
+                )
+
+        self.assertTrue(manager.paths.transaction.exists())
+        self.assertEqual(
+            tomlkit.parse((home / "config.toml").read_text(encoding="utf-8"))["model_provider"],
+            "umich-toolkit",
+        )
+
+        recovered = ConfigManager(home)
+        recovered.initialize()
+
+        self.assertEqual((home / "config.toml").read_text(encoding="utf-8"), original)
+        self.assertFalse(recovered.paths.transaction.exists())
+        self.assertTrue(recovered.doctor().healthy)
+
+    def test_interrupted_switch_after_commit_is_finalized_on_next_start(self) -> None:
+        temporary, home = self.make_home()
+        self.addCleanup(temporary.cleanup)
+        manager = ConfigManager(home)
+        service = FakeCatalogService()
+        manager.initialize()
+        real_atomic_write = manager._atomic_write
+
+        def interrupt_before_last_good(path: Path, text: str) -> None:
+            if path == manager.paths.last_good_config and manager.paths.transaction.exists():
+                raise RuntimeError("simulated interruption")
+            real_atomic_write(path, text)
+
+        with mock.patch.object(manager, "_atomic_write", side_effect=interrupt_before_last_good):
+            with self.assertRaisesRegex(RuntimeError, "simulated interruption"):
+                manager.activate_umich(
+                    list(service.result.models),
+                    "gpt-5.6-terra",
+                    service.build_selected_catalog(list(service.result.models)),
+                    service.result.source,
+                )
+
+        recovered = ConfigManager(home)
+        recovered.initialize()
+
+        active = tomlkit.parse((home / "config.toml").read_text(encoding="utf-8"))
+        self.assertEqual(active["model_provider"], "umich-toolkit")
+        self.assertFalse(recovered.paths.transaction.exists())
+        self.assertTrue(recovered.doctor().healthy)
+
+    def test_failed_umich_reselection_keeps_prior_catalog_and_routing(self) -> None:
+        temporary, home = self.make_home()
+        self.addCleanup(temporary.cleanup)
+        manager = ConfigManager(home)
+        service = FakeCatalogService()
+        all_models = list(service.result.models)
+        manager.initialize()
+        manager.activate_umich(
+            all_models,
+            "gpt-5.6-terra",
+            service.build_selected_catalog(all_models),
+            service.result.source,
+        )
+        prior_active = tomlkit.parse((home / "config.toml").read_text(encoding="utf-8"))
+        prior_catalog = Path(str(prior_active["model_catalog_json"]))
+        prior_catalog_text = prior_catalog.read_text(encoding="utf-8")
+        real_atomic_write = manager._atomic_write
+
+        def interrupt_before_state(path: Path, text: str) -> None:
+            if path == manager.paths.state and manager.paths.transaction.exists():
+                raise RuntimeError("simulated interruption")
+            real_atomic_write(path, text)
+
+        with mock.patch.object(manager, "_atomic_write", side_effect=interrupt_before_state):
+            with self.assertRaisesRegex(RuntimeError, "simulated interruption"):
+                manager.activate_umich(
+                    [all_models[0]],
+                    "gpt-5.6-sol",
+                    service.build_selected_catalog([all_models[0]]),
+                    service.result.source,
+                )
+
+        recovered = ConfigManager(home)
+        recovered.initialize()
+        active = tomlkit.parse((home / "config.toml").read_text(encoding="utf-8"))
+        self.assertEqual(active["model"], "gpt-5.6-terra")
+        self.assertEqual(Path(str(active["model_catalog_json"])), prior_catalog)
+        self.assertEqual(prior_catalog.read_text(encoding="utf-8"), prior_catalog_text)
+
+        active["desktop"] = {"example": True}
+        (home / "config.toml").write_text(tomlkit.dumps(active), encoding="utf-8")
+        recovered.activate_openai()
+        restored = tomlkit.parse((home / "config.toml").read_text(encoding="utf-8"))
+        self.assertTrue(restored["desktop"]["example"])
+
+    def test_restore_uses_managed_or_original_openai_snapshot(self) -> None:
+        temporary, home = self.make_home()
+        self.addCleanup(temporary.cleanup)
+        manager = ConfigManager(home)
+        service = FakeCatalogService()
+        original = (home / "config.toml").read_text(encoding="utf-8")
+        manager.initialize()
+        manager.activate_umich(
+            list(service.result.models),
+            "gpt-5.6-terra",
+            service.build_selected_catalog(list(service.result.models)),
+            service.result.source,
+        )
+        active = tomlkit.parse((home / "config.toml").read_text(encoding="utf-8"))
+        active["desktop"] = {"example": True}
+        (home / "config.toml").write_text(tomlkit.dumps(active), encoding="utf-8")
+
+        source = manager.restore_openai()
+        restored = tomlkit.parse((home / "config.toml").read_text(encoding="utf-8"))
+        self.assertEqual(source, manager.paths.base_config)
+        self.assertTrue(restored["desktop"]["example"])
+
+        manager.restore_openai(original=True)
+        self.assertEqual((home / "config.toml").read_text(encoding="utf-8"), original)
+
+    def test_doctor_is_read_only_before_initialization(self) -> None:
+        temporary, home = self.make_home()
+        self.addCleanup(temporary.cleanup)
+        manager = ConfigManager(home)
+
+        report = manager.doctor()
+
+        self.assertFalse(report.healthy)
+        self.assertFalse(manager.paths.root.exists())
+
+    def test_doctor_and_restore_command_flows(self) -> None:
+        temporary, home = self.make_home()
+        self.addCleanup(temporary.cleanup)
+        manager = ConfigManager(home)
+        manager.initialize()
+        launcher = FakeLauncher()
+        doctor_output = io.StringIO()
+
+        self.assertEqual(
+            run_doctor(home, Console(io.StringIO(), doctor_output), {}, manager=manager, launcher=launcher),
+            0,
+        )
+        self.assertIn("Result: healthy", doctor_output.getvalue())
+
+        restore_output = io.StringIO()
+        self.assertEqual(
+            run_restore(
+                home,
+                Console(io.StringIO(), restore_output),
+                {},
+                manager=manager,
+                launcher=launcher,
+            ),
+            0,
+        )
+        self.assertIn("Environment: OpenAI", restore_output.getvalue())
+        self.assertEqual(launcher.stopped_checks, 1)
+
     @unittest.skipIf(os.name == "nt", "POSIX permission behavior")
     def test_existing_codex_home_permissions_are_unchanged(self) -> None:
         temporary, home = self.make_home()
@@ -295,6 +500,46 @@ class LauncherTests(unittest.TestCase):
         which.side_effect = lambda name, path=None: "/usr/bin/chatgpt" if name == "chatgpt" else None
 
         self.assertEqual(Launcher({"PATH": "/usr/bin"}).validate("desktop"), ["/usr/bin/chatgpt"])
+
+    @mock.patch("codex_configure.cli.sys.platform", "darwin")
+    @mock.patch("codex_configure.cli.Path.is_file", return_value=True)
+    def test_macos_desktop_uses_chatgpt_bundle_executable(self, is_file: mock.Mock) -> None:
+        self.assertEqual(
+            Launcher({"PATH": "/usr/bin", "HOME": "/Users/test"}).validate("desktop"),
+            ["/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"],
+        )
+
+    @mock.patch("codex_configure.cli.sys.platform", "darwin")
+    @mock.patch("codex_configure.cli.Path.is_file", return_value=False)
+    @mock.patch("codex_configure.cli.shutil.which", return_value="/usr/bin/open")
+    def test_macos_open_fallback_is_rejected_for_umich(
+        self, which: mock.Mock, is_file: mock.Mock
+    ) -> None:
+        with self.assertRaisesRegex(UserFacingError, "cannot reliably pass"):
+            Launcher({"PATH": "/usr/bin", "HOME": "/Users/test"}).validate(
+                "desktop", requires_environment=True
+            )
+
+    @mock.patch("codex_configure.cli.subprocess.run")
+    @mock.patch("codex_configure.cli.shutil.which", return_value="/usr/bin/pgrep")
+    @mock.patch("codex_configure.cli.sys.platform", "linux")
+    def test_running_clients_checks_desktop_and_cli_names(
+        self, which: mock.Mock, run: mock.Mock
+    ) -> None:
+        def result(command: list[str], **kwargs: object) -> mock.Mock:
+            return mock.Mock(returncode=0 if command[-1] in {"chatgpt", "codex"} else 1)
+
+        run.side_effect = result
+
+        launcher = Launcher({"PATH": "/usr/bin"})
+        self.assertEqual(launcher.running_clients(), ["chatgpt", "codex"])
+        with self.assertRaisesRegex(UserFacingError, "chatgpt, codex"):
+            launcher.ensure_clients_stopped()
+
+    @mock.patch("codex_configure.cli.shutil.which", return_value=None)
+    def test_missing_pgrep_blocks_switch(self, which: mock.Mock) -> None:
+        with self.assertRaisesRegex(UserFacingError, "pgrep is unavailable"):
+            Launcher({"PATH": "/empty"}).ensure_clients_stopped()
 
     @mock.patch("codex_configure.cli.subprocess.Popen")
     def test_chatgpt_launch_is_detached(self, popen: mock.Mock) -> None:

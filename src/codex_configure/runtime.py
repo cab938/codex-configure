@@ -34,8 +34,14 @@ class RuntimePaths:
     profiles: Path
     catalogs: Path
     locks: Path
+    recovery: Path
     state: Path
     active_config: Path
+    last_good_config: Path
+    last_good_state: Path
+    pending_config: Path
+    pending_state: Path
+    transaction: Path
 
     @classmethod
     def from_home(cls, codex_home: Path) -> "RuntimePaths":
@@ -48,9 +54,31 @@ class RuntimePaths:
             profiles=root / "profiles",
             catalogs=root / "catalogs",
             locks=root / "locks",
+            recovery=root / "recovery",
             state=root / "state.toml",
             active_config=codex_home / "config.toml",
+            last_good_config=root / "recovery" / "last-good-config.toml",
+            last_good_state=root / "recovery" / "last-good-state.toml",
+            pending_config=root / "recovery" / "pending-previous-config.toml",
+            pending_state=root / "recovery" / "pending-previous-state.toml",
+            transaction=root / "recovery" / "transaction.json",
         )
+
+
+@dataclass(frozen=True)
+class DoctorCheck:
+    status: str
+    name: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class DoctorReport:
+    checks: tuple[DoctorCheck, ...]
+
+    @property
+    def healthy(self) -> bool:
+        return all(check.status != "error" for check in self.checks)
 
 
 class ConfigManager:
@@ -68,31 +96,162 @@ class ConfigManager:
             self.paths.profiles,
             self.paths.catalogs,
             self.paths.locks,
+            self.paths.recovery,
         ):
             directory.mkdir(parents=True, exist_ok=True)
             directory.chmod(0o700)
 
-        if not self.paths.base_config.exists():
-            original = self._read_active_config()
-            self._validate_toml(original, self.paths.active_config)
-            self._atomic_write(self.paths.base_config, original)
-            state = tomlkit.document()
-            state["schema_version"] = 1
-            state["active_environment"] = "original"
-            state["active_config_sha256"] = self._hash_text(original)
-            self._atomic_write(self.paths.state, tomlkit.dumps(state))
-        elif not self.paths.state.exists():
-            raise UserFacingError(
-                f"Runtime state is missing while {self.paths.base_config} exists; refusing to guess."
-            )
+        with self._activation_lock():
+            self._recover_transaction()
 
-        if not self.paths.original_config.exists():
-            self._atomic_write(
-                self.paths.original_config,
-                self.paths.base_config.read_text(encoding="utf-8"),
-            )
+            if not self.paths.base_config.exists():
+                original = self._read_active_config()
+                self._validate_toml(original, self.paths.active_config)
+                state_text = self._build_state(original, "original")
+                self._atomic_write(self.paths.base_config, original)
+                self._atomic_write(self.paths.state, state_text)
+                self._write_last_good_pair(original, state_text)
+            elif not self.paths.state.exists():
+                base = self.paths.base_config.read_text(encoding="utf-8")
+                active = self._read_active_config()
+                if self._hash_text(base) != self._hash_text(active):
+                    raise UserFacingError(
+                        f"Runtime state is missing while {self.paths.base_config} exists; "
+                        "refusing to guess."
+                    )
+                state_text = self._build_state(active, "openai")
+                self._atomic_write(self.paths.state, state_text)
+                self._write_last_good_pair(active, state_text)
+
+            if not self.paths.original_config.exists():
+                self._atomic_write(
+                    self.paths.original_config,
+                    self.paths.base_config.read_text(encoding="utf-8"),
+                )
+
+            active = self._read_active_config()
+            state_text = self.paths.state.read_text(encoding="utf-8")
+            if self._consistent_pair(active, state_text):
+                self._write_last_good_pair(active, state_text)
 
         self._write_openai_profile()
+
+    def doctor(self, credential_path: Path | None = None) -> DoctorReport:
+        """Inspect the managed runtime without creating or modifying any files."""
+        checks: list[DoctorCheck] = []
+        checks.append(
+            DoctorCheck(
+                "ok" if self.paths.codex_home.exists() else "error",
+                "Codex home",
+                str(self.paths.codex_home),
+            )
+        )
+
+        active = self._read_active_config()
+        try:
+            self._validate_toml(active, self.paths.active_config)
+        except UserFacingError as exc:
+            checks.append(DoctorCheck("error", "Active config", str(exc)))
+        else:
+            description = str(self.paths.active_config)
+            if not self.paths.active_config.exists():
+                description += " (not present; Codex defaults apply)"
+            checks.append(DoctorCheck("ok", "Active config", description))
+
+        required = (
+            ("Base snapshot", self.paths.base_config),
+            ("Original snapshot", self.paths.original_config),
+            ("Runtime state", self.paths.state),
+            ("Last-known-good config", self.paths.last_good_config),
+            ("Last-known-good state", self.paths.last_good_state),
+        )
+        for name, path in required:
+            checks.append(
+                DoctorCheck("ok" if path.exists() else "error", name, str(path))
+            )
+
+        for name, path in (
+            ("Base snapshot TOML", self.paths.base_config),
+            ("Original snapshot TOML", self.paths.original_config),
+        ):
+            if not path.exists():
+                continue
+            try:
+                self._validate_toml(path.read_text(encoding="utf-8"), path)
+            except (OSError, UserFacingError) as exc:
+                checks.append(DoctorCheck("error", name, str(exc)))
+            else:
+                checks.append(DoctorCheck("ok", name, "valid"))
+
+        if self.paths.last_good_config.exists() and self.paths.last_good_state.exists():
+            try:
+                last_config = self.paths.last_good_config.read_text(encoding="utf-8")
+                last_state = self.paths.last_good_state.read_text(encoding="utf-8")
+                consistent = self._consistent_pair(last_config, last_state)
+            except OSError as exc:
+                checks.append(DoctorCheck("error", "Recovery snapshot", str(exc)))
+            else:
+                checks.append(
+                    DoctorCheck(
+                        "ok" if consistent else "error",
+                        "Recovery snapshot",
+                        "config and state match" if consistent else "config and state do not match",
+                    )
+                )
+
+        if self.paths.state.exists():
+            try:
+                state_text = self.paths.state.read_text(encoding="utf-8")
+                state = tomlkit.parse(state_text)
+                consistent = self._consistent_pair(active, state_text)
+                environment = str(state.get("active_environment", "unknown"))
+                detail = f"environment={environment}; active hash "
+                detail += "matches" if consistent else "does not match"
+                checks.append(
+                    DoctorCheck("ok" if consistent else "error", "Active state", detail)
+                )
+            except (OSError, tomlkit.exceptions.ParseError) as exc:
+                checks.append(DoctorCheck("error", "Active state", f"Unreadable state: {exc}"))
+
+        if self.paths.transaction.exists():
+            checks.append(
+                DoctorCheck(
+                    "error",
+                    "Pending transaction",
+                    f"Recovery is pending at {self.paths.transaction}; run codex-configure restore.",
+                )
+            )
+        else:
+            checks.append(DoctorCheck("ok", "Pending transaction", "none"))
+
+        for managed_path in (
+            Path("/etc/codex/managed_config.toml"),
+            Path("/etc/codex/requirements.toml"),
+        ):
+            if managed_path.exists():
+                checks.append(
+                    DoctorCheck(
+                        "warning",
+                        "Managed configuration",
+                        f"{managed_path} is present and may override user configuration",
+                    )
+                )
+
+        credential = credential_path or self.paths.root / ".env"
+        if credential.exists():
+            mode = credential.stat().st_mode & 0o777
+            status = "ok" if os.name == "nt" or mode & 0o077 == 0 else "error"
+            detail = f"{credential} (mode {mode:04o})"
+            checks.append(DoctorCheck(status, "U-M credential file", detail))
+        else:
+            checks.append(
+                DoctorCheck(
+                    "warning",
+                    "U-M credential file",
+                    f"not present at {credential} (OpenAI remains usable)",
+                )
+            )
+        return DoctorReport(tuple(checks))
 
     def load_umich_preferences(self) -> tuple[list[str], str | None]:
         path = self.paths.profiles / "umich" / "profile.toml"
@@ -116,6 +275,17 @@ class ConfigManager:
             self._promote_active_config(base, "openai")
         return self.paths.profiles / "openai"
 
+    def restore_openai(self, original: bool = False) -> Path:
+        """Restore the managed OpenAI config, or the immutable first-run snapshot."""
+        self.initialize()
+        with self._activation_lock():
+            self._reconcile_active_config()
+            source = self.paths.original_config if original else self.paths.base_config
+            text = source.read_text(encoding="utf-8")
+            self._validate_toml(text, source)
+            self._promote_active_config(text, "openai")
+        return source
+
     def activate_umich(
         self,
         selected_models: list[ModelChoice],
@@ -130,9 +300,11 @@ class ConfigManager:
 
         with self._activation_lock():
             self._reconcile_active_config()
-            catalog_path = self.paths.catalogs / "umich-openai-azure.json"
             self._validate_catalog(catalog, selected_ids)
-            self._atomic_write(catalog_path, json.dumps(catalog, indent=2) + "\n")
+            catalog_text = json.dumps(catalog, indent=2) + "\n"
+            catalog_hash = self._hash_text(catalog_text)
+            catalog_path = self.paths.catalogs / f"umich-openai-azure-{catalog_hash}.json"
+            self._atomic_write(catalog_path, catalog_text)
 
             overlay = self._umich_overlay(default_model, catalog_path)
             profile_path = self.paths.profiles / "umich"
@@ -215,23 +387,26 @@ class ConfigManager:
         return overlay
 
     def _reconcile_active_config(self) -> None:
-        state = tomlkit.parse(self.paths.state.read_text(encoding="utf-8"))
+        try:
+            state = tomlkit.parse(self.paths.state.read_text(encoding="utf-8"))
+        except (OSError, tomlkit.exceptions.ParseError) as exc:
+            raise UserFacingError(f"Invalid runtime state at {self.paths.state}: {exc}") from exc
         expected = state.get("active_config_sha256")
+        environment = state.get("active_environment")
+        if not isinstance(expected, str) or environment not in {"original", "openai", "umich"}:
+            raise UserFacingError(
+                f"Runtime state at {self.paths.state} is incomplete; refusing to guess."
+            )
         active_text = self._read_active_config()
+        self._validate_toml(active_text, self.paths.active_config)
         actual = self._hash_text(active_text)
         if expected != actual:
             current = tomlkit.parse(active_text)
             base = tomlkit.parse(self.paths.base_config.read_text(encoding="utf-8"))
-            environment = state.get("active_environment")
 
             if environment == "umich":
-                overlay_path = self.paths.profiles / "umich" / "config.toml"
-                if not overlay_path.exists():
-                    raise UserFacingError(
-                        f"U-M profile state is missing at {overlay_path}; refusing to guess."
-                    )
-                overlay = tomlkit.parse(overlay_path.read_text(encoding="utf-8"))
-                if not self._routing_matches(current, overlay):
+                expected_routing = self._expected_umich_routing(str(expected))
+                if not self._routing_matches(current, expected_routing):
                     raise UserFacingError(
                         f"{self.paths.active_config} changed provider routing outside "
                         "codex-configure; refusing to overwrite it."
@@ -247,6 +422,30 @@ class ConfigManager:
             candidate = tomlkit.dumps(reconciled)
             self._validate_toml(candidate, self.paths.base_config)
             self._atomic_write(self.paths.base_config, candidate)
+            state["active_config_sha256"] = actual
+            state_text = tomlkit.dumps(state)
+            self._atomic_write(self.paths.state, state_text)
+            self._write_last_good_pair(active_text, state_text)
+
+    def _expected_umich_routing(self, expected_hash: str) -> Any:
+        try:
+            last_good = self.paths.last_good_config.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            last_good = ""
+        if last_good and self._hash_text(last_good) == expected_hash:
+            self._validate_toml(last_good, self.paths.last_good_config)
+            return tomlkit.parse(last_good)
+
+        overlay_path = self.paths.profiles / "umich" / "config.toml"
+        if not overlay_path.exists():
+            raise UserFacingError(
+                f"U-M routing state is missing under {self.paths.recovery} and at "
+                f"{overlay_path}; refusing to guess."
+            )
+        try:
+            return tomlkit.parse(overlay_path.read_text(encoding="utf-8"))
+        except (OSError, tomlkit.exceptions.ParseError) as exc:
+            raise UserFacingError(f"Invalid U-M routing state at {overlay_path}: {exc}") from exc
 
     @staticmethod
     def _routing_matches(current: Any, overlay: Any) -> bool:
@@ -297,12 +496,125 @@ class ConfigManager:
         return unwrap() if unwrap else value
 
     def _promote_active_config(self, text: str, environment: str) -> None:
+        self._validate_toml(text, self.paths.active_config)
+        previous_config, previous_state = self._current_or_last_good_pair()
+        state_text = self._build_state(text, environment)
+
+        self._atomic_write(self.paths.pending_config, previous_config)
+        self._atomic_write(self.paths.pending_state, previous_state)
+        marker = {
+            "schema_version": 1,
+            "target_environment": environment,
+            "target_config_sha256": self._hash_text(text),
+        }
+        self._atomic_write(self.paths.transaction, json.dumps(marker, indent=2) + "\n")
+
         self._atomic_write(self.paths.active_config, text)
+        self._atomic_write(self.paths.state, state_text)
+        self._write_last_good_pair(text, state_text)
+        self._remove_file(self.paths.transaction)
+        self._remove_file(self.paths.pending_config)
+        self._remove_file(self.paths.pending_state)
+
+    def _recover_transaction(self) -> None:
+        if not self.paths.transaction.exists():
+            if self.paths.state.exists():
+                active = self._read_active_config()
+                state_text = self.paths.state.read_text(encoding="utf-8")
+                if self._consistent_pair(active, state_text):
+                    self._remove_file(self.paths.pending_config)
+                    self._remove_file(self.paths.pending_state)
+            return
+
+        target_hash: str | None = None
+        try:
+            marker = json.loads(self.paths.transaction.read_text(encoding="utf-8"))
+            if isinstance(marker, dict) and isinstance(marker.get("target_config_sha256"), str):
+                target_hash = marker["target_config_sha256"]
+        except (OSError, json.JSONDecodeError):
+            pass
+
+        active = self._read_active_config()
+        if self.paths.state.exists():
+            state_text = self.paths.state.read_text(encoding="utf-8")
+            if (
+                target_hash is not None
+                and self._hash_text(active) == target_hash
+                and self._consistent_pair(active, state_text)
+            ):
+                self._write_last_good_pair(active, state_text)
+                self._clear_transaction()
+                return
+
+        try:
+            previous_config = self.paths.pending_config.read_text(encoding="utf-8")
+            previous_state = self.paths.pending_state.read_text(encoding="utf-8")
+        except FileNotFoundError as exc:
+            raise UserFacingError(
+                f"An incomplete configuration transaction exists at {self.paths.transaction}, "
+                "but its recovery snapshot is missing."
+            ) from exc
+        if not self._consistent_pair(previous_config, previous_state):
+            raise UserFacingError(
+                f"The recovery snapshot under {self.paths.recovery} is inconsistent; "
+                "refusing to guess."
+            )
+        self._atomic_write(self.paths.active_config, previous_config)
+        self._atomic_write(self.paths.state, previous_state)
+        self._write_last_good_pair(previous_config, previous_state)
+        self._clear_transaction()
+
+    def _clear_transaction(self) -> None:
+        self._remove_file(self.paths.transaction)
+        self._remove_file(self.paths.pending_config)
+        self._remove_file(self.paths.pending_state)
+
+    def _current_or_last_good_pair(self) -> tuple[str, str]:
+        active = self._read_active_config()
+        try:
+            state_text = self.paths.state.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            state_text = ""
+        if self._consistent_pair(active, state_text):
+            return active, state_text
+
+        try:
+            last_config = self.paths.last_good_config.read_text(encoding="utf-8")
+            last_state = self.paths.last_good_state.read_text(encoding="utf-8")
+        except FileNotFoundError as exc:
+            raise UserFacingError(
+                "The active configuration is inconsistent and no last-known-good snapshot exists."
+            ) from exc
+        if not self._consistent_pair(last_config, last_state):
+            raise UserFacingError("The last-known-good configuration snapshot is inconsistent.")
+        return last_config, last_state
+
+    def _write_last_good_pair(self, config_text: str, state_text: str) -> None:
+        if not self._consistent_pair(config_text, state_text):
+            raise UserFacingError("Refusing to save an inconsistent last-known-good snapshot.")
+        self._atomic_write(self.paths.last_good_config, config_text)
+        self._atomic_write(self.paths.last_good_state, state_text)
+
+    def _consistent_pair(self, config_text: str, state_text: str) -> bool:
+        try:
+            self._validate_toml(config_text, self.paths.active_config)
+            state = tomlkit.parse(state_text)
+        except (UserFacingError, tomlkit.exceptions.ParseError):
+            return False
+        expected = state.get("active_config_sha256")
+        environment = state.get("active_environment")
+        return (
+            isinstance(expected, str)
+            and environment in {"original", "openai", "umich"}
+            and expected == self._hash_text(config_text)
+        )
+
+    def _build_state(self, text: str, environment: str) -> str:
         state = tomlkit.document()
         state["schema_version"] = 1
         state["active_environment"] = environment
         state["active_config_sha256"] = self._hash_text(text)
-        self._atomic_write(self.paths.state, tomlkit.dumps(state))
+        return tomlkit.dumps(state)
 
     @contextmanager
     def _activation_lock(self) -> Iterator[None]:
@@ -357,6 +669,28 @@ class ConfigManager:
             temporary_path.chmod(0o600)
             os.replace(temporary_path, path)
             path.chmod(0o600)
+            ConfigManager._fsync_directory(path.parent)
         finally:
             if temporary_path.exists():
                 temporary_path.unlink()
+
+    @staticmethod
+    def _remove_file(path: Path) -> None:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return
+        ConfigManager._fsync_directory(path.parent)
+
+    @staticmethod
+    def _fsync_directory(path: Path) -> None:
+        try:
+            descriptor = os.open(path, os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            os.fsync(descriptor)
+        except OSError:
+            pass
+        finally:
+            os.close(descriptor)

@@ -54,7 +54,7 @@ class Launcher:
     def __init__(self, environ: Mapping[str, str] | None = None) -> None:
         self.environ = dict(environ or os.environ)
 
-    def validate(self, target: str) -> list[str]:
+    def validate(self, target: str, requires_environment: bool = False) -> list[str]:
         if target == "cli":
             command = shutil.which("codex", path=self.environ.get("PATH"))
             if not command:
@@ -66,11 +66,29 @@ class Launcher:
             command = shlex.split(override)
             if not command:
                 raise UserFacingError("CODEX_DESKTOP_COMMAND is empty.")
+            if Path(command[0]).name.lower() == "open" and requires_environment:
+                raise UserFacingError(
+                    "CODEX_DESKTOP_COMMAND uses macOS open, which cannot reliably pass the "
+                    "U-M credential. Point it at the ChatGPT app executable instead."
+                )
             return command
         if sys.platform == "darwin":
+            home = Path(self.environ.get("HOME", str(Path.home())))
+            app_binaries = (
+                Path("/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"),
+                home / "Applications" / "ChatGPT.app" / "Contents" / "MacOS" / "ChatGPT",
+            )
+            for app_binary in app_binaries:
+                if app_binary.is_file():
+                    return [str(app_binary)]
             command = shutil.which("open", path=self.environ.get("PATH"))
             if command:
-                return [command, "-a", "Codex"]
+                if requires_environment:
+                    raise UserFacingError(
+                        "Found ChatGPT only through macOS open, which cannot reliably pass the "
+                        "U-M credential. Set CODEX_DESKTOP_COMMAND to the ChatGPT app executable."
+                    )
+                return [command, "-n", "-a", "ChatGPT"]
         for candidate in ("chatgpt", "codex-desktop", "codex-app"):
             command = shutil.which(candidate, path=self.environ.get("PATH"))
             if command:
@@ -79,24 +97,51 @@ class Launcher:
             "Could not find Codex Desktop; set CODEX_DESKTOP_COMMAND to its launch command."
         )
 
-    def ensure_desktop_stopped(self) -> None:
-        if not shutil.which("pgrep", path=self.environ.get("PATH")):
-            return
-        names = ("Codex",) if sys.platform == "darwin" else ("ChatGPT", "codex-desktop")
+    def running_clients(self) -> list[str]:
+        pgrep = shutil.which("pgrep", path=self.environ.get("PATH"))
+        if not pgrep:
+            raise UserFacingError(
+                "Could not verify that Codex clients are stopped because pgrep is unavailable."
+            )
+        names = (
+            ("ChatGPT", "chatgpt", "Codex", "codex")
+            if sys.platform == "darwin"
+            else ("ChatGPT", "chatgpt", "codex-desktop", "codex-app", "codex", "codex-cli")
+        )
+        running: list[str] = []
         for name in names:
             result = subprocess.run(
-                ["pgrep", "-x", name],
+                [pgrep, "-x", name],
                 check=False,
                 capture_output=True,
+                text=True,
                 env=self.environ,
             )
             if result.returncode == 0:
-                raise UserFacingError("Codex Desktop is running. Close it before switching environments.")
+                running.append(name)
+            elif result.returncode != 1:
+                detail = result.stderr.strip() or f"exit status {result.returncode}"
+                raise UserFacingError(f"Could not inspect running clients with pgrep: {detail}")
+        return running
+
+    def ensure_clients_stopped(self) -> None:
+        running = self.running_clients()
+        if running:
+            names = ", ".join(running)
+            raise UserFacingError(
+                f"Codex or ChatGPT is running ({names}). Close it before switching environments."
+            )
 
     def launch(self, command: list[str], extra_environment: Mapping[str, str]) -> int:
         child_env = self.environ.copy()
         child_env.update(extra_environment)
-        if Path(command[0]).name in {"chatgpt", "codex-desktop", "codex-app", "open"}:
+        executable = Path(command[0]).name.lower()
+        if executable == "open" and extra_environment:
+            raise UserFacingError(
+                "The macOS open fallback cannot reliably pass the U-M credential. "
+                "Set CODEX_DESKTOP_COMMAND to the ChatGPT app executable."
+            )
+        if executable in {"chatgpt", "codex-desktop", "codex-app", "open"}:
             subprocess.Popen(command, env=child_env, start_new_session=True)
             return 0
         return subprocess.call(command, env=child_env)
@@ -216,8 +261,7 @@ def run_interactive(
         target = console.choose("Choose launch target", ["Codex Desktop", "Codex CLI"])
         launch_target = "desktop" if target == 1 else "cli"
         command = [] if prepare_only else launcher.validate(launch_target)
-        if not prepare_only:
-            launcher.ensure_desktop_stopped()
+        launcher.ensure_clients_stopped()
         active_profile = manager.activate_openai()
     else:
         default_env_file = manager.paths.root / ".env"
@@ -249,9 +293,10 @@ def run_interactive(
         default_model = selected_models[chosen_default - 1].slug
         target = console.choose("Choose launch target", ["Codex Desktop", "Codex CLI"])
         launch_target = "desktop" if target == 1 else "cli"
-        command = [] if prepare_only else launcher.validate(launch_target)
-        if not prepare_only:
-            launcher.ensure_desktop_stopped()
+        command = [] if prepare_only else launcher.validate(
+            launch_target, requires_environment=True
+        )
+        launcher.ensure_clients_stopped()
         catalog = service.build_selected_catalog(selected_models)
         active_profile = manager.activate_umich(
             selected_models,
@@ -273,8 +318,68 @@ def run_interactive(
     return launcher.launch(command, extra_environment)
 
 
+def run_doctor(
+    codex_home: Path,
+    console: Console,
+    environ: Mapping[str, str],
+    env_file: Path | None = None,
+    manager: ConfigManager | None = None,
+    launcher: Launcher | None = None,
+) -> int:
+    manager = manager or ConfigManager(codex_home)
+    launcher = launcher or Launcher(environ)
+    credential_path = env_file or manager.paths.root / ".env"
+    report = manager.doctor(credential_path)
+
+    console.write(f"Codex home: {manager.paths.codex_home}")
+    console.write(f"Profiles directory: {manager.paths.profiles}")
+    console.write()
+    labels = {"ok": "OK", "warning": "WARN", "error": "ERROR"}
+    for check in report.checks:
+        console.write(f"[{labels[check.status]}] {check.name}: {check.detail}")
+
+    try:
+        running = launcher.running_clients()
+    except UserFacingError as exc:
+        console.write(f"[ERROR] Client lifecycle: {exc}")
+        clients_healthy = False
+    else:
+        clients_healthy = not running
+        detail = ", ".join(running) if running else "no Codex or ChatGPT clients detected"
+        console.write(f"[{'OK' if clients_healthy else 'ERROR'}] Client lifecycle: {detail}")
+
+    healthy = report.healthy and clients_healthy
+    console.write()
+    console.write("Result: healthy" if healthy else "Result: attention required")
+    return 0 if healthy else 1
+
+
+def run_restore(
+    codex_home: Path,
+    console: Console,
+    environ: Mapping[str, str],
+    original: bool = False,
+    manager: ConfigManager | None = None,
+    launcher: Launcher | None = None,
+) -> int:
+    manager = manager or ConfigManager(codex_home)
+    launcher = launcher or Launcher(environ)
+    launcher.ensure_clients_stopped()
+    source = manager.restore_openai(original=original)
+    console.write("Environment: OpenAI")
+    console.write(f"Restored from: {source}")
+    console.write(f"Active config: {manager.paths.active_config}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Switch and launch a stock Codex environment.")
+    parser.add_argument(
+        "command",
+        nargs="?",
+        choices=("doctor", "restore"),
+        help="Inspect the runtime or restore the managed OpenAI configuration.",
+    )
     parser.add_argument(
         "--codex-home",
         type=Path,
@@ -290,6 +395,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Generate and activate the selected profile without starting Codex.",
     )
+    parser.add_argument(
+        "--original",
+        action="store_true",
+        help="With restore, use the immutable config captured on the first run.",
+    )
     return parser
 
 
@@ -302,6 +412,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         codex_home = Path(configured_home).expanduser() if configured_home else Path.home() / ".codex"
     console = Console(sys.stdin, sys.stdout)
     try:
+        if args.command == "doctor":
+            if args.prepare_only or args.original:
+                raise UserFacingError("doctor does not accept --prepare-only or --original.")
+            return run_doctor(
+                codex_home=codex_home,
+                console=console,
+                environ=environ,
+                env_file=args.env_file,
+            )
+        if args.command == "restore":
+            if args.prepare_only or args.env_file:
+                raise UserFacingError("restore does not accept --prepare-only or --env-file.")
+            return run_restore(
+                codex_home=codex_home,
+                console=console,
+                environ=environ,
+                original=args.original,
+            )
+        if args.original:
+            raise UserFacingError("--original is only valid with restore.")
         return run_interactive(
             codex_home=codex_home,
             console=console,

@@ -1,6 +1,6 @@
 # Project and Runtime Layout
 
-Status: version-0.1 runtime layout implemented; backup rotation and operational logging remain planned.
+Status: version-0.1 runtime and immediate crash-recovery layout implemented; backup rotation and operational logging remain planned.
 
 ## Repository layout
 
@@ -46,13 +46,19 @@ $CODEX_HOME/
     |       |-- profile.toml
     |       \-- config.toml
     |-- catalogs/
-    |   |-- umich.json                  # last-known-good generated catalog
+    |   |-- umich-openai-azure-HASH.json # immutable generated catalog
     |   \-- PROFILE_ID.json
     |-- locks/
     |   \-- activate.lock
+    \-- recovery/
+        |-- last-good-config.toml
+        |-- last-good-state.toml
+        |-- pending-previous-config.toml  # present only during activation
+        |-- pending-previous-state.toml   # present only during activation
+        \-- transaction.json              # commit marker, present only during activation
 ```
 
-The immutable first-run configuration is implemented. Backup rotation and redacted activity logging shown in the broader design are not created by version 0.1.
+The immutable first-run configuration and one immediate last-known-good pair are implemented. Backup rotation and redacted activity logging shown in the broader design are not created by version 0.1.
 
 The exact existing Codex state paths vary by client and version. Inventory must discover them, and the tool must not assume that every possible entry shown above exists.
 
@@ -106,11 +112,11 @@ Those files are not yet part of the canonical runtime layout. The prototype must
 Catalogs are promoted only after successful generation and validation:
 
 ```text
-catalogs/umich.json
-catalogs/umich.json.candidate-TOKEN       # temporary, removed after promotion
+catalogs/umich-openai-azure-HASH.json
+catalogs/.umich-openai-azure-HASH.json.TOKEN  # temporary, removed after promotion
 ```
 
-Temporary names must be unpredictable and created securely. A failed refresh must not replace the last-known-good catalog.
+Temporary names must be unpredictable and created securely. Catalog filenames include a SHA-256 content hash, so a new selection is promoted at a new path and cannot invalidate a currently active U-M configuration. A failed refresh must not replace the last-known-good catalog.
 
 Catalog metadata in `state.toml` should record source, fetch time, content hash, validation result, and applicable Codex version without recording request credentials.
 
@@ -140,7 +146,7 @@ The tool does not own or rewrite `/etc/codex/managed_config.toml`, `/etc/codex/r
 
 ## Backups and recovery
 
-The initial adoption should preserve an immutable, timestamped copy of the existing non-secret configuration. Each successful activation may retain one immediate last-known-good configuration plus a bounded audit record.
+Initial adoption preserves an immutable copy of the existing non-secret configuration. Each successful activation retains one immediate last-known-good config/state pair. The current implementation does not create timestamped rotation or an audit log.
 
 Backups should not recursively copy `CODEX_HOME`. In particular, they must not collect `auth.json`, `codex-configure/.env`, task databases, logs, plugin state, or unrelated user files through a broad glob.
 
@@ -148,7 +154,7 @@ Recovery should support:
 
 ```text
 codex-configure restore
-codex-configure restore --snapshot TIMESTAMP
+codex-configure restore --original
 ```
 
-Restore must use the same validation, locking, stopped-client check, and atomic promotion path as normal activation.
+Both forms use the same validation, lock, stopped-client check, and crash-recoverable promotion path as normal activation. The default restores the maintained shared OpenAI base; `--original` restores the immutable first-run snapshot. Timestamped snapshot selection remains outside version 0.1.
