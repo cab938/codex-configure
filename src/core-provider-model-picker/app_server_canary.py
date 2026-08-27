@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Small, stdlib-only JSONL canary for the provider-model picker spike.
+"""Small, stdlib-only JSONL canary for the provider-model picker.
 
 The caller supplies an already-built patched ``codex`` binary, a dedicated
-CODEX_HOME, and that home's config.toml. The process inherits credentials from
-the caller; this program never reads, prints, or persists their values.
+CODEX_HOME, and that home's config.toml.  The external provider namespace is
+required on the command line.  Its credential is inherited by Codex from the
+parent environment; this program never accepts, reads, prints, or persists a
+credential value.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import selectors
 import subprocess
 import sys
@@ -20,19 +23,40 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
-UMICH_MODEL = "umich-toolkit::gpt-5.6-terra"
-UMICH_KEY_ENV = "UMICH_TOOLKIT_API_KEY"
 OPENAI_MARKER = "CANARY_OPENAI_OK"
-UMICH_MARKER = "CANARY_UM_OK"
+EXTERNAL_MARKER = "CANARY_EXTERNAL_OK"
+PREFERRED_EXTERNAL_MODEL = "gpt-5.6-terra"
+_PROVIDER_ID_RE = re.compile(r"^[a-z0-9]+(?:[-_][a-z0-9]+)*$")
 
 
 class CanaryError(RuntimeError):
     """An actionable canary failure without echoing protocol or env secrets."""
 
 
+def validate_provider_id(provider_id: str) -> str:
+    """Validate an external provider ID used as a catalog namespace."""
+
+    if not isinstance(provider_id, str) or not _PROVIDER_ID_RE.fullmatch(provider_id):
+        raise CanaryError(
+            "provider ID must use lowercase letters, digits, hyphens, or underscores"
+        )
+    if provider_id == "openai":
+        raise CanaryError("provider ID must name an external provider, not openai")
+    return provider_id
+
+
+def credential_env_name(provider_id: str) -> str:
+    """Return the deterministic parent-environment credential variable name."""
+
+    validate_provider_id(provider_id)
+    return provider_id.replace("-", "_").upper() + "_API_KEY"
+
+
 def json_line(message: Mapping[str, Any]) -> bytes:
     """Encode one app-server JSON-RPC message as a newline-delimited frame."""
-    return (json.dumps(message, separators=(",", ":"), ensure_ascii=True) + "\n").encode("utf-8")
+    return (json.dumps(message, separators=(",", ":"), ensure_ascii=True) + "\n").encode(
+        "utf-8"
+    )
 
 
 def parse_json_line(line: str | bytes) -> dict[str, Any]:
@@ -49,8 +73,8 @@ def parse_json_line(line: str | bytes) -> dict[str, Any]:
 
 
 def _field_strings(entry: Mapping[str, Any]) -> tuple[str, ...]:
-    # Preserve the catalog's order: selecting the first listed OpenAI model
-    # should be reproducible when an entry exposes both id and model.
+    # Preserve the catalog's order: selecting the first listed model should be
+    # reproducible when an entry exposes both id and model.
     return tuple(
         value
         for key in ("id", "model")
@@ -58,28 +82,69 @@ def _field_strings(entry: Mapping[str, Any]) -> tuple[str, ...]:
     )
 
 
-def catalog_models(result: Mapping[str, Any]) -> tuple[str, str]:
-    """Validate the required qualified entries and return (OpenAI, U-M)."""
+def _is_selectable(entry: Mapping[str, Any]) -> bool:
+    """Return whether a model-list entry is eligible for a turn."""
+
+    hidden = entry.get("hidden")
+    if isinstance(hidden, bool) and hidden:
+        return False
+    selectable = entry.get("selectable")
+    if isinstance(selectable, bool) and not selectable:
+        return False
+    # These spellings are not emitted by the current protocol, but accepting
+    # them keeps this small validator clear if a catalog fixture uses its
+    # source metadata rather than the serialized Model shape.
+    for key in ("showInPicker", "show_in_picker"):
+        show_in_picker = entry.get(key)
+        if isinstance(show_in_picker, bool) and not show_in_picker:
+            return False
+    return True
+
+
+def _qualified_values(entry: Mapping[str, Any], provider_id: str) -> tuple[str, ...]:
+    prefix = f"{provider_id}::"
+    return tuple(value for value in _field_strings(entry) if value.startswith(prefix) and value != prefix)
+
+
+def catalog_models(result: Mapping[str, Any], provider_id: str) -> tuple[str, str]:
+    """Validate and select ``(OpenAI model, external model)`` from model/list.
+
+    The external provider's qualified terra model is preferred when it is
+    selectable.  Otherwise the first selectable model in that provider's
+    namespace is used, preserving model/list order.
+    """
+
+    validate_provider_id(provider_id)
     data = result.get("data")
     if not isinstance(data, list):
         raise CanaryError("model/list result has no data array")
 
     openai_model: str | None = None
-    saw_umich = False
+    external_model: str | None = None
+    first_external_model: str | None = None
+    preferred = f"{provider_id}::{PREFERRED_EXTERNAL_MODEL}"
     for item in data:
         if not isinstance(item, dict):
             continue
         values = _field_strings(item)
-        if UMICH_MODEL in values:
-            saw_umich = True
-        if openai_model is None:
-            openai_model = next((value for value in values if value.startswith("openai::")), None)
+        if openai_model is None and _is_selectable(item):
+            openai_model = next(
+                (value for value in values if value.startswith("openai::") and value != "openai::"),
+                None,
+            )
+        if _is_selectable(item):
+            qualified = _qualified_values(item, provider_id)
+            if preferred in qualified:
+                external_model = preferred
+            elif first_external_model is None and qualified:
+                first_external_model = qualified[0]
 
     if openai_model is None:
-        raise CanaryError("model/list did not return a qualified OpenAI model")
-    if not saw_umich:
-        raise CanaryError(f"model/list did not return {UMICH_MODEL}")
-    return openai_model, UMICH_MODEL
+        raise CanaryError("model/list did not return a selectable qualified OpenAI model")
+    external_model = external_model or first_external_model
+    if external_model is None:
+        raise CanaryError(f"model/list did not return a selectable model for {provider_id}")
+    return openai_model, external_model
 
 
 def thread_id_from_start(result: Mapping[str, Any]) -> str:
@@ -98,15 +163,24 @@ def turn_id_from_start(result: Mapping[str, Any]) -> str:
     return turn_id
 
 
-def validate_resumed_selection(result: Mapping[str, Any], *, thread_id: str) -> None:
+def validate_resumed_selection(
+    result: Mapping[str, Any],
+    *,
+    thread_id: str,
+    provider_id: str,
+    external_model: str,
+) -> None:
+    """Require restart/resume to restore the same task and external routing."""
+
+    validate_provider_id(provider_id)
     thread = result.get("thread")
     resumed_thread_id = thread.get("id") if isinstance(thread, dict) else None
     if resumed_thread_id != thread_id:
         raise CanaryError("thread/resume did not restore the original task id")
-    if result.get("model") != UMICH_MODEL:
-        raise CanaryError("thread/resume did not restore the qualified U-M model")
-    if result.get("modelProvider") != "umich-toolkit":
-        raise CanaryError("thread/resume did not restore the U-M provider")
+    if result.get("model") != external_model:
+        raise CanaryError("thread/resume did not restore the qualified external model")
+    if result.get("modelProvider") != provider_id:
+        raise CanaryError("thread/resume did not restore the external provider")
 
 
 def completed_marker(
@@ -151,8 +225,6 @@ class AppServer:
             raise CanaryError(f"CODEX_HOME is not a directory: {self.codex_home}")
         if not self.config.is_file() or self.config != expected_config:
             raise CanaryError("config must be the supplied dedicated CODEX_HOME/config.toml")
-        if UMICH_KEY_ENV not in os.environ:
-            raise CanaryError(f"{UMICH_KEY_ENV} must be supplied by the parent environment")
         env = os.environ.copy()
         env["CODEX_HOME"] = str(self.codex_home)
         self.process = subprocess.Popen(
@@ -242,6 +314,13 @@ class AppServer:
 
 
 def run(args: argparse.Namespace) -> None:
+    provider_id = validate_provider_id(args.provider_id)
+    credential_env = credential_env_name(provider_id)
+    # Membership checks only.  The value remains opaque and is passed through
+    # to the child app-server process by the inherited environment.
+    if credential_env not in os.environ:
+        raise CanaryError(f"{credential_env} must be supplied by the parent environment")
+
     thread_id: str | None = None
     server = AppServer(
         args.codex,
@@ -252,8 +331,8 @@ def run(args: argparse.Namespace) -> None:
     try:
         _initialize(server)
         catalog = server.request("model/list", {"limit": 100, "includeHidden": True})
-        openai_model, umich_model = catalog_models(catalog)
-        print(f"catalog ok: {openai_model}, {umich_model}")
+        openai_model, external_model = catalog_models(catalog, provider_id)
+        print(f"catalog ok: {openai_model}, {external_model}")
         if args.catalog_only:
             return
 
@@ -278,15 +357,15 @@ def run(args: argparse.Namespace) -> None:
             expected=OPENAI_MARKER,
         )
 
-        second_turn = _start_turn(server, thread_id, umich_model, UMICH_MARKER)
+        second_turn = _start_turn(server, thread_id, external_model, EXTERNAL_MARKER)
         second_completed = server.notification("turn/completed")
         completed_marker(
             second_completed,
             thread_id=thread_id,
             turn_id=second_turn,
-            expected=UMICH_MARKER,
+            expected=EXTERNAL_MARKER,
         )
-        print(f"turns ok: task {thread_id} kept across OpenAI -> U-M")
+        print(f"turns ok: task {thread_id} kept across OpenAI -> {provider_id}")
     finally:
         server.close()
 
@@ -303,8 +382,13 @@ def run(args: argparse.Namespace) -> None:
             "thread/resume",
             {"threadId": thread_id, "excludeTurns": True},
         )
-        validate_resumed_selection(resumed, thread_id=thread_id)
-        print(f"resume ok: task {thread_id} restored {UMICH_MODEL}")
+        validate_resumed_selection(
+            resumed,
+            thread_id=thread_id,
+            provider_id=provider_id,
+            external_model=external_model,
+        )
+        print(f"resume ok: task {thread_id} restored {external_model}")
     finally:
         resumed_server.close()
 
@@ -358,7 +442,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--codex", type=Path, required=True, help="patched codex binary")
     parser.add_argument("--codex-home", type=Path, required=True, help="dedicated CODEX_HOME")
-    parser.add_argument("--cwd", type=Path, default=Path.cwd(), help="isolated task working directory")
+    parser.add_argument(
+        "--cwd",
+        type=Path,
+        default=Path.cwd(),
+        help="isolated task working directory (default: current directory)",
+    )
+    parser.add_argument(
+        "--provider-id",
+        required=True,
+        help="external provider namespace, for example research or teaching",
+    )
     parser.add_argument("--timeout", type=float, default=45.0, help="per-frame timeout in seconds")
     parser.add_argument("--catalog-only", action="store_true", help="stop after model/list")
     return parser.parse_args(argv)

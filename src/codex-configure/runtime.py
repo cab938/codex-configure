@@ -8,12 +8,13 @@ import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Mapping
 
 import tomlkit
 
 from .catalog import ModelChoice
 from .errors import UserFacingError
+from .providers import ProviderDescriptor, ProviderRegistry, validate_shortname
 
 try:
     import fcntl
@@ -32,7 +33,9 @@ class RuntimePaths:
     base_config: Path
     original_config: Path
     profiles: Path
+    providers: Path
     catalogs: Path
+    env_file: Path
     locks: Path
     recovery: Path
     state: Path
@@ -52,7 +55,9 @@ class RuntimePaths:
             base_config=root / "base" / "config.toml",
             original_config=root / "base" / "original-config.toml",
             profiles=root / "profiles",
+            providers=root / "providers.d",
             catalogs=root / "catalogs",
+            env_file=root / ".env",
             locks=root / "locks",
             recovery=root / "recovery",
             state=root / "state.toml",
@@ -84,6 +89,103 @@ class DoctorReport:
 class ConfigManager:
     def __init__(self, codex_home: Path) -> None:
         self.paths = RuntimePaths.from_home(codex_home.resolve())
+        self.registry = ProviderRegistry(self.paths.root, self.paths.codex_home)
+
+    @property
+    def provider_registry(self) -> ProviderRegistry:
+        """The provider/catalog store associated with this Codex home."""
+
+        return self.registry
+
+    def is_initialized(self) -> bool:
+        """Whether ``codex-configure init`` has materialized its safe state."""
+
+        if not all(
+            path.is_file()
+            for path in (
+                self.paths.base_config,
+                self.paths.original_config,
+                self.paths.state,
+            )
+        ):
+            return False
+        try:
+            providers = self.registry.list_providers(include_stock=False)
+            if not providers:
+                return False
+            for provider in providers:
+                self.registry.load_catalog(provider)
+        except UserFacingError:
+            return False
+        return True
+
+    def require_initialized(self) -> None:
+        if not self.is_initialized():
+            raise UserFacingError(
+                "codex-configure is not initialized for this CODEX_HOME. "
+                "Run `codex-configure init` first (or set CODEX_HOME to an initialized home)."
+            )
+
+    def list_providers(self, include_stock: bool = True) -> tuple[ProviderDescriptor, ...]:
+        return self.registry.list_providers(include_stock=include_stock)
+
+    def load_credentials(self, environ: Mapping[str, str] | None = None) -> dict[str, str]:
+        return self.registry.load_credentials(environ)
+
+    def get_provider(self, shortname: str) -> ProviderDescriptor:
+        return self.registry.get(shortname)
+
+    def save_umich_provider(
+        self,
+        shortname: str,
+        api_key: str,
+        catalog: dict[str, Any],
+        *,
+        selected_models: list[str] | None = None,
+        default_model: str | None = None,
+        catalog_source: str | None = None,
+        display_name: str | None = None,
+        credential_env: str | None = None,
+    ) -> ProviderDescriptor:
+        """Persist one named Toolkit service and its optional UI profile."""
+
+        self.initialize()
+        expected_env = self.registry.validate_env_collision(shortname)
+        if credential_env is not None and credential_env != expected_env:
+            raise UserFacingError(
+                f"Credential variable for `{shortname}` must be {expected_env}."
+            )
+        model_ids = selected_models or [
+            str(entry["slug"])
+            for entry in catalog.get("models", [])
+            if isinstance(entry, dict) and isinstance(entry.get("slug"), str)
+        ]
+        if not model_ids:
+            raise UserFacingError("The selected model catalog must contain at least one model.")
+        catalog_ids = {
+            str(entry["slug"])
+            for entry in catalog.get("models", [])
+            if isinstance(entry, dict) and isinstance(entry.get("slug"), str)
+        }
+        if any(model_id not in catalog_ids for model_id in model_ids):
+            raise UserFacingError("Selected models must all be present in the generated catalog.")
+        if default_model is None:
+            default_model = model_ids[0]
+        if default_model not in model_ids:
+            raise UserFacingError("The default model must be one of the selected models.")
+        descriptor = self.registry.write_umich_provider(
+            shortname,
+            None if api_key == "" else api_key,
+            catalog,
+            display_name=display_name,
+        )
+        self._write_named_profile(
+            descriptor,
+            model_ids,
+            default_model,
+            catalog_source or "U-M Toolkit model endpoint",
+        )
+        return descriptor
 
     def initialize(self) -> None:
         codex_home_existed = self.paths.codex_home.exists()
@@ -94,12 +196,14 @@ class ConfigManager:
             self.paths.root,
             self.paths.base_config.parent,
             self.paths.profiles,
+            self.paths.providers,
             self.paths.catalogs,
             self.paths.locks,
             self.paths.recovery,
         ):
             directory.mkdir(parents=True, exist_ok=True)
             directory.chmod(0o700)
+        self.registry.ensure_layout()
 
         with self._activation_lock():
             self._recover_transaction()
@@ -224,6 +328,21 @@ class ConfigManager:
         else:
             checks.append(DoctorCheck("ok", "Pending transaction", "none"))
 
+        try:
+            external_providers = self.registry.list_providers(include_stock=False)
+        except UserFacingError as exc:
+            checks.append(DoctorCheck("warning", "Provider descriptors", str(exc)))
+            external_providers = ()
+        for provider in external_providers:
+            try:
+                self.registry.load_catalog(provider)
+            except UserFacingError as exc:
+                checks.append(DoctorCheck("warning", f"Provider catalog ({provider.id})", str(exc)))
+            else:
+                checks.append(
+                    DoctorCheck("ok", f"Provider catalog ({provider.id})", str(provider.catalog_path))
+                )
+
         for managed_path in (
             Path("/etc/codex/managed_config.toml"),
             Path("/etc/codex/requirements.toml"),
@@ -271,8 +390,88 @@ class ConfigManager:
         self.initialize()
         with self._activation_lock():
             self._reconcile_active_config()
-            base = self.paths.base_config.read_text(encoding="utf-8")
-            self._promote_active_config(base, "openai")
+            base = tomlkit.parse(self.paths.base_config.read_text(encoding="utf-8"))
+            model = base.get("model")
+            if isinstance(model, str) and "::" in model:
+                provider, unqualified_model = model.split("::", 1)
+                if provider == "openai" and unqualified_model:
+                    base["model"] = unqualified_model
+                else:
+                    # Stock Core cannot route an external-qualified value.
+                    # Omitting it lets the current stock OpenAI default win.
+                    del base["model"]
+            self._promote_active_config(tomlkit.dumps(base), "openai")
+        return self.paths.profiles / "openai"
+
+    def activate_provider(self, shortname: str, default_model: str | None = None) -> Path:
+        """Activate one stock or named provider through the safe switch path."""
+
+        if shortname == "openai":
+            return self.activate_openai()
+        validate_shortname(shortname)
+        self.require_initialized()
+        descriptor = self.registry.get(shortname)
+        catalog = self.registry.load_catalog(descriptor)
+        models = catalog.get("models")
+        if not isinstance(models, list) or not models:
+            raise UserFacingError(f"Provider {shortname} has no usable model catalog.")
+        model_ids = [
+            str(entry["slug"])
+            for entry in models
+            if isinstance(entry, dict) and isinstance(entry.get("slug"), str)
+        ]
+        if not model_ids:
+            raise UserFacingError(f"Provider {shortname} has no usable model catalog.")
+        profile_path = self.paths.profiles / shortname / "profile.toml"
+        if default_model is None and profile_path.exists():
+            try:
+                profile = tomlkit.parse(profile_path.read_text(encoding="utf-8"))
+                candidate = profile.get("default_model")
+                if isinstance(candidate, str):
+                    default_model = candidate
+            except (OSError, tomlkit.exceptions.ParseError):
+                pass
+        default_model = default_model or model_ids[0]
+        if default_model not in model_ids:
+            raise UserFacingError(
+                f"Default model `{default_model}` is not present in provider {shortname}'s catalog."
+            )
+        overlay = self._provider_overlay(descriptor, default_model)
+        with self._activation_lock():
+            self._reconcile_active_config()
+            base = tomlkit.parse(self.paths.base_config.read_text(encoding="utf-8"))
+            for key in ("model", "model_provider", "model_catalog_json"):
+                base[key] = overlay[key]
+            base_providers = base.get("model_providers")
+            if base_providers is None:
+                base_providers = tomlkit.table()
+                base["model_providers"] = base_providers
+            if not hasattr(base_providers, "__setitem__"):
+                raise UserFacingError("Existing model_providers configuration is not a TOML table.")
+            base_providers[shortname] = overlay["model_providers"][shortname]
+            candidate = tomlkit.dumps(base)
+            self._validate_toml(candidate, self.paths.active_config)
+            self._promote_active_config(candidate, shortname)
+        return self.paths.profiles / shortname
+
+    def activate_dynamic(self) -> Path:
+        """Activate the shared base for the patched Core's dynamic picker."""
+
+        self.require_initialized()
+        self.initialize()
+        with self._activation_lock():
+            self._reconcile_active_config()
+            base = tomlkit.parse(self.paths.base_config.read_text(encoding="utf-8"))
+            # The patched Core discovers providers.d itself.  Keep active
+            # config on the stock/OpenAI route and remove only routing fields
+            # codex-configure owns, so dynamic launches cannot stale-pin one
+            # external provider or catalog.
+            for key in ("model_provider", "model_catalog_json"):
+                if key in base:
+                    del base[key]
+            candidate = tomlkit.dumps(base)
+            self._validate_toml(candidate, self.paths.active_config)
+            self._promote_active_config(candidate, "openai")
         return self.paths.profiles / "openai"
 
     def restore_openai(self, original: bool = False) -> Path:
@@ -346,6 +545,50 @@ class ConfigManager:
         self._atomic_write(profile_path / "profile.toml", tomlkit.dumps(metadata))
         self._atomic_write(profile_path / "config.toml", "")
 
+    def _write_named_profile(
+        self,
+        descriptor: ProviderDescriptor,
+        selected_ids: list[str],
+        default_model: str,
+        catalog_source: str,
+    ) -> None:
+        profile_path = self.paths.profiles / descriptor.id
+        profile_path.mkdir(parents=True, exist_ok=True)
+        profile_path.chmod(0o700)
+        metadata = tomlkit.document()
+        metadata["schema_version"] = 1
+        metadata["id"] = descriptor.id
+        metadata["display_name"] = descriptor.display_name
+        metadata["provider_id"] = descriptor.id
+        metadata["catalog_source"] = catalog_source
+        metadata["catalog_path"] = str(descriptor.catalog_path)
+        metadata["selected_models"] = selected_ids
+        metadata["default_model"] = default_model
+        self._atomic_write(profile_path / "profile.toml", tomlkit.dumps(metadata))
+        self._atomic_write(
+            profile_path / "config.toml",
+            tomlkit.dumps(self._provider_overlay(descriptor, default_model)),
+        )
+
+    def _provider_overlay(self, descriptor: ProviderDescriptor, default_model: str) -> Any:
+        overlay = tomlkit.document()
+        overlay["model"] = default_model
+        overlay["model_provider"] = descriptor.id
+        overlay["model_catalog_json"] = str(descriptor.catalog_path)
+        providers = tomlkit.table()
+        provider = tomlkit.table()
+        for key, value in descriptor.provider_config().items():
+            if key == "env_http_headers":
+                headers = tomlkit.inline_table()
+                for header_name, env_key in value.items():
+                    headers[header_name] = env_key
+                provider[key] = headers
+            else:
+                provider[key] = value
+        providers[descriptor.id] = provider
+        overlay["model_providers"] = providers
+        return overlay
+
     def _write_umich_metadata(
         self,
         profile_path: Path,
@@ -393,7 +636,7 @@ class ConfigManager:
             raise UserFacingError(f"Invalid runtime state at {self.paths.state}: {exc}") from exc
         expected = state.get("active_config_sha256")
         environment = state.get("active_environment")
-        if not isinstance(expected, str) or environment not in {"original", "openai", "umich"}:
+        if not isinstance(expected, str) or not self._known_environment(environment):
             raise UserFacingError(
                 f"Runtime state at {self.paths.state} is incomplete; refusing to guess."
             )
@@ -404,20 +647,17 @@ class ConfigManager:
             current = tomlkit.parse(active_text)
             base = tomlkit.parse(self.paths.base_config.read_text(encoding="utf-8"))
 
-            if environment == "umich":
-                expected_routing = self._expected_umich_routing(str(expected))
-                if not self._routing_matches(current, expected_routing):
+            if environment not in {"original", "openai"}:
+                expected_routing = self._expected_profile_routing(environment, str(expected))
+                provider_id = PROVIDER_ID if environment == "umich" else environment
+                if not self._routing_matches(current, expected_routing, provider_id):
                     raise UserFacingError(
                         f"{self.paths.active_config} changed provider routing outside "
                         "codex-configure; refusing to overwrite it."
                     )
-                reconciled = self._restore_base_routing(current, base)
+                reconciled = self._restore_base_routing(current, base, provider_id)
             elif environment in {"original", "openai"}:
                 reconciled = current
-            else:
-                raise UserFacingError(
-                    f"Unknown active environment {environment!r}; refusing to guess."
-                )
 
             candidate = tomlkit.dumps(reconciled)
             self._validate_toml(candidate, self.paths.base_config)
@@ -428,6 +668,9 @@ class ConfigManager:
             self._write_last_good_pair(active_text, state_text)
 
     def _expected_umich_routing(self, expected_hash: str) -> Any:
+        return self._expected_profile_routing(PROVIDER_ID, expected_hash)
+
+    def _expected_profile_routing(self, provider_id: str, expected_hash: str) -> Any:
         try:
             last_good = self.paths.last_good_config.read_text(encoding="utf-8")
         except FileNotFoundError:
@@ -436,7 +679,7 @@ class ConfigManager:
             self._validate_toml(last_good, self.paths.last_good_config)
             return tomlkit.parse(last_good)
 
-        overlay_path = self.paths.profiles / "umich" / "config.toml"
+        overlay_path = self.paths.profiles / provider_id / "config.toml"
         if not overlay_path.exists():
             raise UserFacingError(
                 f"U-M routing state is missing under {self.paths.recovery} and at "
@@ -448,7 +691,7 @@ class ConfigManager:
             raise UserFacingError(f"Invalid U-M routing state at {overlay_path}: {exc}") from exc
 
     @staticmethod
-    def _routing_matches(current: Any, overlay: Any) -> bool:
+    def _routing_matches(current: Any, overlay: Any, provider_id: str = PROVIDER_ID) -> bool:
         for key in ("model", "model_provider", "model_catalog_json"):
             if (key in current) != (key in overlay):
                 return False
@@ -461,14 +704,14 @@ class ConfigManager:
         overlay_providers = overlay.get("model_providers")
         if current_providers is None or overlay_providers is None:
             return current_providers is overlay_providers
-        if PROVIDER_ID not in current_providers or PROVIDER_ID not in overlay_providers:
+        if provider_id not in current_providers or provider_id not in overlay_providers:
             return False
-        return ConfigManager._unwrap(current_providers[PROVIDER_ID]) == ConfigManager._unwrap(
-            overlay_providers[PROVIDER_ID]
+        return ConfigManager._unwrap(current_providers[provider_id]) == ConfigManager._unwrap(
+            overlay_providers[provider_id]
         )
 
     @staticmethod
-    def _restore_base_routing(current: Any, base: Any) -> Any:
+    def _restore_base_routing(current: Any, base: Any, provider_id: str = PROVIDER_ID) -> Any:
         reconciled = copy.deepcopy(current)
         for key in ("model", "model_provider", "model_catalog_json"):
             if key in base:
@@ -478,17 +721,29 @@ class ConfigManager:
 
         reconciled_providers = reconciled.get("model_providers")
         base_providers = base.get("model_providers")
-        base_has_provider = base_providers is not None and PROVIDER_ID in base_providers
+        base_has_provider = base_providers is not None and provider_id in base_providers
         if base_has_provider:
             if reconciled_providers is None:
                 reconciled_providers = tomlkit.table()
                 reconciled["model_providers"] = reconciled_providers
-            reconciled_providers[PROVIDER_ID] = copy.deepcopy(base_providers[PROVIDER_ID])
-        elif reconciled_providers is not None and PROVIDER_ID in reconciled_providers:
-            del reconciled_providers[PROVIDER_ID]
+            reconciled_providers[provider_id] = copy.deepcopy(base_providers[provider_id])
+        elif reconciled_providers is not None and provider_id in reconciled_providers:
+            del reconciled_providers[provider_id]
             if len(reconciled_providers) == 0:
                 del reconciled["model_providers"]
         return reconciled
+
+    @staticmethod
+    def _known_environment(environment: Any) -> bool:
+        if environment in {"original", "openai", "umich"}:
+            return True
+        if not isinstance(environment, str):
+            return False
+        try:
+            validate_shortname(environment)
+        except UserFacingError:
+            return False
+        return True
 
     @staticmethod
     def _unwrap(value: Any) -> Any:
@@ -605,7 +860,7 @@ class ConfigManager:
         environment = state.get("active_environment")
         return (
             isinstance(expected, str)
-            and environment in {"original", "openai", "umich"}
+            and ConfigManager._known_environment(environment)
             and expected == self._hash_text(config_text)
         )
 

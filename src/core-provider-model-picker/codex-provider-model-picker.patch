@@ -1,8 +1,8 @@
 diff --git a/codex-rs/app-server/src/models.rs b/codex-rs/app-server/src/models.rs
-index 1063e64..6ed5bb5 100644
+index 1063e64c33..393d964cf5 100644
 --- a/codex-rs/app-server/src/models.rs
 +++ b/codex-rs/app-server/src/models.rs
-@@ -5,32 +5,101 @@ use codex_app_server_protocol::ModelServiceTier;
+@@ -5,32 +5,96 @@ use codex_app_server_protocol::ModelServiceTier;
  use codex_app_server_protocol::ModelUpgradeInfo;
  use codex_app_server_protocol::ReasoningEffortOption;
  use codex_core::ThreadManager;
@@ -12,9 +12,8 @@ index 1063e64..6ed5bb5 100644
  use codex_models_manager::manager::RefreshStrategy;
  use codex_protocol::openai_models::ModelPreset;
  use codex_protocol::openai_models::ReasoningEffortPreset;
++use std::collections::BTreeSet;
  
-+const PICKER_PROVIDER_IDS: [&str; 2] = ["openai", "umich-toolkit"];
-+
  pub async fn supported_models(
      thread_manager: Arc<ThreadManager>,
      include_hidden: bool,
@@ -32,25 +31,21 @@ index 1063e64..6ed5bb5 100644
 +    let auth_manager = thread_manager.auth_manager();
 +    let active_manager = thread_manager.get_models_manager();
 +    let mut models = Vec::new();
++    let mut provider_ids = BTreeSet::from(["openai".to_string()]);
++    provider_ids.extend(config.external_model_catalogs.keys().cloned());
 +
-+    for provider_id in PICKER_PROVIDER_IDS {
++    for provider_id in provider_ids {
 +        let manager = if provider_id == active_provider_id {
 +            Some(active_manager.clone())
 +        } else {
 +            config
 +                .model_providers
-+                .get(provider_id)
++                .get(&provider_id)
 +                .map(|provider_info| {
-+                    // Discovery-only catalogs must not read or write the active provider's
-+                    // models_cache.json. Give the provider its own cache namespace instead.
 +                    create_model_provider(provider_info.clone(), Some(auth_manager.clone()))
 +                        .models_manager(
-+                            config
-+                                .codex_home
-+                                .to_path_buf()
-+                                .join("model-providers")
-+                                .join(provider_id),
-+                            /*config_model_catalog*/ None,
++                            config.codex_home.to_path_buf(),
++                            config.model_catalog_for_provider(&provider_id),
 +                        )
 +                })
 +        };
@@ -68,7 +63,7 @@ index 1063e64..6ed5bb5 100644
 +            provider_models
 +                .into_iter()
 +                .filter(|preset| include_hidden || preset.show_in_picker)
-+                .map(|preset| model_from_preset(preset, provider_id)),
++                .map(|preset| model_from_preset(preset, &provider_id)),
 +        );
 +    }
 +
@@ -116,7 +111,7 @@ index 1063e64..6ed5bb5 100644
              upgrade_copy: upgrade.upgrade_copy.clone(),
              model_link: upgrade.model_link.clone(),
              migration_markdown: upgrade.migration_markdown.clone(),
-@@ -40,7 +109,7 @@ fn model_from_preset(preset: ModelPreset) -> Model {
+@@ -40,7 +104,7 @@ fn model_from_preset(preset: ModelPreset) -> Model {
                  .map(chrono::DateTime::timestamp),
          }),
          availability_nux: preset.availability_nux.map(Into::into),
@@ -126,7 +121,7 @@ index 1063e64..6ed5bb5 100644
          model_specialty: preset.model_specialty,
          hidden: !preset.show_in_picker,
 diff --git a/codex-rs/app-server/src/request_processors/catalog_processor.rs b/codex-rs/app-server/src/request_processors/catalog_processor.rs
-index 9c7bd4e..de4e058 100644
+index 9c7bd4e806..de4e058960 100644
 --- a/codex-rs/app-server/src/request_processors/catalog_processor.rs
 +++ b/codex-rs/app-server/src/request_processors/catalog_processor.rs
 @@ -173,6 +173,7 @@ impl CatalogRequestProcessor {
@@ -154,7 +149,7 @@ index 9c7bd4e..de4e058 100644
          .await;
          let total = models.len();
 diff --git a/codex-rs/app-server/src/request_processors/persisted_resume_settings.rs b/codex-rs/app-server/src/request_processors/persisted_resume_settings.rs
-index 5e408b0..95379b0 100644
+index 5e408b02c9..95379b0ffe 100644
 --- a/codex-rs/app-server/src/request_processors/persisted_resume_settings.rs
 +++ b/codex-rs/app-server/src/request_processors/persisted_resume_settings.rs
 @@ -6,6 +6,8 @@ use codex_rollout::RolloutItem;
@@ -237,7 +232,7 @@ index 5e408b0..95379b0 100644
  #[path = "persisted_resume_settings_tests.rs"]
  mod tests;
 diff --git a/codex-rs/app-server/src/request_processors/persisted_resume_settings_tests.rs b/codex-rs/app-server/src/request_processors/persisted_resume_settings_tests.rs
-index 98ab3f5..acf53a4 100644
+index 98ab3f59a2..acf53a4e21 100644
 --- a/codex-rs/app-server/src/request_processors/persisted_resume_settings_tests.rs
 +++ b/codex-rs/app-server/src/request_processors/persisted_resume_settings_tests.rs
 @@ -25,12 +25,28 @@ fn settings_item(
@@ -394,7 +389,7 @@ index 98ab3f5..acf53a4 100644
              approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
              active_permission_profile: None,
 diff --git a/codex-rs/app-server/src/request_processors/thread_processor.rs b/codex-rs/app-server/src/request_processors/thread_processor.rs
-index 0803fb1..1ebc8bb 100644
+index 0803fb1445..1ebc8bb19b 100644
 --- a/codex-rs/app-server/src/request_processors/thread_processor.rs
 +++ b/codex-rs/app-server/src/request_processors/thread_processor.rs
 @@ -232,6 +232,24 @@ fn merge_persisted_resume_metadata(
@@ -470,7 +465,7 @@ index 0803fb1..1ebc8bb 100644
                  typesafe_overrides.approval_policy = Some(persisted_settings.approval_policy);
              }
 diff --git a/codex-rs/app-server/src/request_processors/thread_processor_tests.rs b/codex-rs/app-server/src/request_processors/thread_processor_tests.rs
-index ffba9ba..8befeff 100644
+index ffba9ba44f..8befeff7d6 100644
 --- a/codex-rs/app-server/src/request_processors/thread_processor_tests.rs
 +++ b/codex-rs/app-server/src/request_processors/thread_processor_tests.rs
 @@ -779,6 +779,43 @@ mod thread_processor_behavior_tests {
@@ -518,7 +513,7 @@ index ffba9ba..8befeff 100644
      fn merge_persisted_resume_metadata_preserves_explicit_overrides() -> Result<()> {
          let mut request_overrides = Some(HashMap::from([(
 diff --git a/codex-rs/app-server/tests/suite/v2/model_list.rs b/codex-rs/app-server/tests/suite/v2/model_list.rs
-index 7e21fb6..dc1e3eb 100644
+index 7e21fb6d8e..a3d8b18f6b 100644
 --- a/codex-rs/app-server/tests/suite/v2/model_list.rs
 +++ b/codex-rs/app-server/tests/suite/v2/model_list.rs
 @@ -31,12 +31,13 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -548,13 +543,12 @@ index 7e21fb6..dc1e3eb 100644
          description: preset.description.clone(),
          model_specialty: preset.model_specialty.clone(),
          hidden: !preset.show_in_picker,
-@@ -329,6 +330,113 @@ async fn list_models_pagination_works() -> Result<()> {
+@@ -329,6 +330,121 @@ async fn list_models_pagination_works() -> Result<()> {
      );
  }
  
 +#[tokio::test]
 +async fn list_models_aggregates_qualified_umich_toolkit_catalog() -> Result<()> {
-+    let server = MockServer::start().await;
 +    let toolkit_model: ModelInfo = serde_json::from_value(json!({
 +        "slug": "um-model",
 +        "display_name": "U-M Toolkit model",
@@ -577,17 +571,32 @@ index 7e21fb6..dc1e3eb 100644
 +        "max_context_window": 272000,
 +        "experimental_supported_tools": []
 +    }))?;
-+    let models_mock = mount_models_once(
-+        &server,
-+        ModelsResponse {
-+            models: vec![toolkit_model],
-+        },
-+    )
-+    .await;
-+
 +    let codex_home = TempDir::new()?;
 +    write_models_cache(codex_home.path())?;
-+    let server_uri = server.uri();
++    let providers_dir = codex_home.path().join("codex-configure/providers.d");
++    let catalogs_dir = codex_home.path().join("codex-configure/catalogs");
++    std::fs::create_dir_all(&providers_dir)?;
++    std::fs::create_dir_all(&catalogs_dir)?;
++    std::fs::write(
++        catalogs_dir.join("umich.json"),
++        serde_json::to_vec(&ModelsResponse {
++            models: vec![toolkit_model],
++        })?,
++    )?;
++    std::fs::write(
++        providers_dir.join("umich-toolkit.toml"),
++        r#"schema_version = 1
++kind = "external"
++model_catalog_json = "../catalogs/umich.json"
++
++[model_providers.umich-toolkit]
++name = "U-M Toolkit"
++base_url = "https://example.test/v1"
++
++[model_providers.umich-toolkit.env_http_headers]
++x-portkey-api-key = "UMICH_TOOLKIT_API_KEY"
++"#,
++    )?;
 +    std::fs::write(
 +        codex_home.path().join("config.toml"),
 +        format!(
@@ -595,11 +604,6 @@ index 7e21fb6..dc1e3eb 100644
 +model = "gpt-5"
 +approval_policy = "never"
 +sandbox_mode = "read-only"
-+
-+[model_providers.umich-toolkit]
-+name = "U-M Toolkit"
-+base_url = "{server_uri}/v1"
-+auth = {{ command = "printf", args = ["toolkit-token"] }}
 +"#
 +        ),
 +    )?;
@@ -655,7 +659,6 @@ index 7e21fb6..dc1e3eb 100644
 +            .map(|upgrade| upgrade.model.as_str()),
 +        Some("umich-toolkit::um-upgrade")
 +    );
-+    assert_eq!(models_mock.requests().len(), 1);
 +    Ok(())
 +}
 +
@@ -663,7 +666,7 @@ index 7e21fb6..dc1e3eb 100644
  async fn list_models_rejects_invalid_cursor() -> Result<()> {
      let codex_home = TempDir::new()?;
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index 19f3c4e..324e29c 100644
+index 19f3c4ec21..324e29cd95 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
 @@ -528,6 +528,56 @@ impl ModelClient {
@@ -735,7 +738,7 @@ index 19f3c4e..324e29c 100644
          Arc::clone(&self.turn_state)
      }
 diff --git a/codex-rs/core/src/client_tests.rs b/codex-rs/core/src/client_tests.rs
-index f686257..19d7760 100644
+index f686257772..19d776083e 100644
 --- a/codex-rs/core/src/client_tests.rs
 +++ b/codex-rs/core/src/client_tests.rs
 @@ -1191,3 +1191,21 @@ async fn non_chatgpt_codex_endpoints_omit_attestation_generation() {
@@ -761,7 +764,7 @@ index f686257..19d7760 100644
 +    assert!(!Arc::ptr_eq(&session.client.state, &client.state));
 +}
 diff --git a/codex-rs/core/src/codex_delegate.rs b/codex-rs/core/src/codex_delegate.rs
-index 0a74f92..5fdf111 100644
+index 0a74f925e1..5fdf111ff7 100644
 --- a/codex-rs/core/src/codex_delegate.rs
 +++ b/codex-rs/core/src/codex_delegate.rs
 @@ -118,6 +118,7 @@ pub(crate) async fn run_codex_thread_interactive(
@@ -773,7 +776,7 @@ index 0a74f92..5fdf111 100644
              .services
              .turn_environments
 diff --git a/codex-rs/core/src/compact.rs b/codex-rs/core/src/compact.rs
-index 3ddbea4..1525bb3 100644
+index 3ddbea4463..1525bb3979 100644
 --- a/codex-rs/core/src/compact.rs
 +++ b/codex-rs/core/src/compact.rs
 @@ -262,7 +262,10 @@ async fn run_compact_task_inner_impl(
@@ -789,7 +792,7 @@ index 3ddbea4..1525bb3 100644
      // request tracking)
      // survives retries within this compact turn.
 diff --git a/codex-rs/core/src/compact_remote_v2_attempt.rs b/codex-rs/core/src/compact_remote_v2_attempt.rs
-index 9569649..b9d9567 100644
+index 9569649f8b..b9d9567113 100644
 --- a/codex-rs/core/src/compact_remote_v2_attempt.rs
 +++ b/codex-rs/core/src/compact_remote_v2_attempt.rs
 @@ -100,7 +100,11 @@ pub(super) async fn run_remote_compact_v2_attempt(
@@ -806,7 +809,7 @@ index 9569649..b9d9567 100644
      let compaction_output_result = run_remote_compaction_request_v2(
          sess,
 diff --git a/codex-rs/core/src/config/config_tests.rs b/codex-rs/core/src/config/config_tests.rs
-index 4cc4bc7..1c1d954 100644
+index 4cc4bc7e90..1c1d9541d8 100644
 --- a/codex-rs/core/src/config/config_tests.rs
 +++ b/codex-rs/core/src/config/config_tests.rs
 @@ -950,6 +950,149 @@ profile = "codex-bedrock"
@@ -960,10 +963,18 @@ index 4cc4bc7..1c1d954 100644
  async fn managed_residency_warns_about_provider_header_overrides_without_mutating_config()
  -> std::io::Result<()> {
 diff --git a/codex-rs/core/src/config/mod.rs b/codex-rs/core/src/config/mod.rs
-index 9c1b419..bc1fd96 100644
+index 9c1b419903..4a363b143f 100644
 --- a/codex-rs/core/src/config/mod.rs
 +++ b/codex-rs/core/src/config/mod.rs
-@@ -92,6 +92,7 @@ use codex_model_provider_info::ModelProviderInfo;
+@@ -1,6 +1,7 @@
+ use crate::config::edit::ConfigEdit;
+ use crate::config::edit::ConfigEditsBuilder;
+ use crate::context::world_state::validate_managed_developer_instructions;
++use crate::external_provider_catalogs;
+ use crate::guardian::BUNDLED_GUARDIAN_POLICY;
+ use crate::path_utils::normalize_for_native_workdir;
+ use crate::unified_exec::DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS;
+@@ -92,6 +93,7 @@ use codex_model_provider_info::ModelProviderInfo;
  use codex_model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
  use codex_model_provider_info::built_in_model_providers;
  use codex_model_provider_info::merge_configured_model_providers;
@@ -971,7 +982,53 @@ index 9c1b419..bc1fd96 100644
  use codex_models_manager::ModelsManagerConfig;
  use codex_protocol::config_types::AltScreenMode;
  use codex_protocol::config_types::AutoCompactTokenLimitScope;
-@@ -3691,9 +3692,42 @@ impl Config {
+@@ -953,6 +955,9 @@ pub struct Config {
+     /// When set, this replaces the bundled catalog for the current process.
+     pub model_catalog: Option<ModelsResponse>,
+ 
++    /// Static catalogs loaded from codex-configure provider descriptors.
++    pub external_model_catalogs: HashMap<String, ModelsResponse>,
++
+     /// Optional verbosity control for GPT-5 models (Responses API `text.verbosity`).
+     pub model_verbosity: Option<Verbosity>,
+ 
+@@ -1605,6 +1610,15 @@ impl Config {
+         }
+     }
+ 
++    /// Return the startup-loaded catalog for a provider, falling back to the
++    /// ordinary root `model_catalog_json` override when one was configured.
++    pub fn model_catalog_for_provider(&self, provider_id: &str) -> Option<ModelsResponse> {
++        self.external_model_catalogs
++            .get(provider_id)
++            .cloned()
++            .or_else(|| self.model_catalog.clone())
++    }
++
+     /// Returns auth routing resolved from the effective feature configuration.
+     pub fn auth_route_config(&self) -> AuthRouteConfig {
+         AuthRouteConfig::from_http_client_factory(self.http_client_factory())
+@@ -3131,6 +3145,11 @@ impl Config {
+     ) -> std::io::Result<Self> {
+         // Keep the large config-construction future off small test thread stacks.
+         Box::pin(async move {
++        let configured_provider_ids = cfg.model_providers.keys().cloned().collect();
++        let external_providers =
++            external_provider_catalogs::load(codex_home.as_path(), &configured_provider_ids);
++        cfg.model_providers
++            .extend(external_providers.providers.clone());
+         if cfg.experimental_thread_store_endpoint.is_some() {
+             return Err(std::io::Error::new(
+                 std::io::ErrorKind::InvalidInput,
+@@ -3160,6 +3179,7 @@ impl Config {
+             .startup_warnings()
+             .unwrap_or_default()
+             .to_vec();
++        startup_warnings.extend(external_providers.warnings.iter().cloned());
+         let configured_sqlite_home = cfg.sqlite_home.clone();
+         requirements::apply_to_config(
+             &mut cfg,
+@@ -3691,13 +3711,50 @@ impl Config {
              merge_configured_model_providers(built_in_model_providers(openai_base_url), cfg.model_providers)
                  .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidData, message))?;
  
@@ -1017,8 +1074,25 @@ index 9c1b419..bc1fd96 100644
          let model_provider = model_providers
              .get(&model_provider_id)
              .ok_or_else(|| {
+-                let message = if model_provider_id == LEGACY_OLLAMA_CHAT_PROVIDER_ID {
++                let message = if qualified_model.is_some() {
++                    format!(
++                        "Qualified model provider `{model_provider_id}` is not available; ensure its codex-configure descriptor and static model catalog are valid under `$CODEX_HOME/codex-configure/providers.d`"
++                    )
++                } else if model_provider_id == LEGACY_OLLAMA_CHAT_PROVIDER_ID {
+                     OLLAMA_CHAT_PROVIDER_REMOVED_ERROR.to_string()
+                 } else {
+                     format!("Model provider `{model_provider_id}` not found")
+@@ -4225,6 +4282,7 @@ impl Config {
+             plan_mode_reasoning_effort: cfg.plan_mode_reasoning_effort,
+             model_reasoning_summary: cfg.model_reasoning_summary,
+             model_catalog,
++            external_model_catalogs: external_providers.catalogs,
+             model_verbosity: cfg.model_verbosity,
+             chatgpt_base_url: cfg
+                 .chatgpt_base_url
 diff --git a/codex-rs/core/src/context_manager/history.rs b/codex-rs/core/src/context_manager/history.rs
-index 2d9b647..9908e3a 100644
+index 2d9b647321..9908e3a2cd 100644
 --- a/codex-rs/core/src/context_manager/history.rs
 +++ b/codex-rs/core/src/context_manager/history.rs
 @@ -306,6 +306,20 @@ impl ContextManager {
@@ -1043,7 +1117,7 @@ index 2d9b647..9908e3a 100644
      ///
      /// Instruction turns are history messages that should behave like a new prompt boundary:
 diff --git a/codex-rs/core/src/context_manager/history_tests.rs b/codex-rs/core/src/context_manager/history_tests.rs
-index 190f617..8190cd4 100644
+index 190f617bda..8190cd4f3f 100644
 --- a/codex-rs/core/src/context_manager/history_tests.rs
 +++ b/codex-rs/core/src/context_manager/history_tests.rs
 @@ -411,6 +411,26 @@ fn filters_non_api_messages() {
@@ -1073,8 +1147,275 @@ index 190f617..8190cd4 100644
  #[test]
  fn non_last_reasoning_tokens_return_zero_when_no_user_messages() {
      let history =
+diff --git a/codex-rs/core/src/external_provider_catalogs.rs b/codex-rs/core/src/external_provider_catalogs.rs
+new file mode 100644
+index 0000000000..f9552c878d
+--- /dev/null
++++ b/codex-rs/core/src/external_provider_catalogs.rs
+@@ -0,0 +1,261 @@
++//! Startup-loaded provider descriptors owned by codex-configure.
++//!
++//! The launcher writes one descriptor per provider beneath
++//! `$CODEX_HOME/codex-configure/providers.d`. Keeping discovery here lets the
++//! normal Codex config and provider runtime stay unchanged apart from a small
++//! merge and catalog lookup at startup.
++
++use codex_model_provider_info::ModelProviderInfo;
++use codex_model_provider_info::built_in_model_providers;
++use codex_protocol::openai_models::ModelsResponse;
++use std::collections::HashMap;
++use std::collections::HashSet;
++use std::fs;
++use std::path::{Path, PathBuf};
++
++const CONFIGURE_DIR: &str = "codex-configure";
++const PROVIDERS_DIR: &str = "providers.d";
++const DESCRIPTOR_EXTENSION: &str = "toml";
++
++/// Providers and catalogs that were valid at startup.
++#[derive(Debug, Default)]
++pub(crate) struct LoadedExternalProviders {
++    pub(crate) providers: HashMap<String, ModelProviderInfo>,
++    pub(crate) catalogs: HashMap<String, ModelsResponse>,
++    pub(crate) warnings: Vec<String>,
++}
++
++/// Load all valid codex-configure provider descriptors in deterministic order.
++///
++/// A malformed descriptor is deliberately non-fatal: startup retains the
++/// built-in providers and reports an actionable warning. No external provider
++/// is returned without a non-empty, successfully parsed static catalog.
++pub(crate) fn load(
++    codex_home: &Path,
++    configured_provider_ids: &HashSet<String>,
++) -> LoadedExternalProviders {
++    let directory = codex_home.join(CONFIGURE_DIR).join(PROVIDERS_DIR);
++    let mut result = LoadedExternalProviders::default();
++    let mut descriptors = match fs::read_dir(&directory) {
++        Ok(entries) => entries
++            .filter_map(|entry| match entry {
++                Ok(entry) if entry.file_type().is_ok_and(|kind| kind.is_file()) => {
++                    let path = entry.path();
++                    (path.extension().and_then(|ext| ext.to_str()) == Some(DESCRIPTOR_EXTENSION))
++                        .then_some(path)
++                }
++                Ok(_) => None,
++                Err(error) => {
++                    result.warnings.push(format!(
++                        "could not inspect an external provider descriptor in `{}`: {error}",
++                        directory.display()
++                    ));
++                    None
++                }
++            })
++            .collect::<Vec<_>>(),
++        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return result,
++        Err(error) => {
++            result.warnings.push(format!(
++                "could not read external provider descriptor directory `{}`: {error}",
++                directory.display()
++            ));
++            return result;
++        }
++    };
++    descriptors.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
++
++    let reserved_ids: HashSet<String> = built_in_model_providers(None).into_keys().collect();
++    for descriptor in descriptors {
++        match load_descriptor(&descriptor) {
++            Ok((provider_id, provider, catalog)) => {
++                let reason = if reserved_ids.contains(&provider_id) {
++                    Some(format!("provider ID `{provider_id}` is reserved by Codex"))
++                } else if configured_provider_ids.contains(&provider_id) {
++                    Some(format!("provider ID `{provider_id}` is already configured"))
++                } else if result.providers.contains_key(&provider_id) {
++                    Some(format!("provider ID `{provider_id}` is duplicated"))
++                } else {
++                    None
++                };
++                if let Some(reason) = reason {
++                    skip(&mut result.warnings, &descriptor, &reason);
++                    continue;
++                }
++                result.providers.insert(provider_id.clone(), provider);
++                result.catalogs.insert(provider_id, catalog);
++            }
++            Err(reason) => skip(&mut result.warnings, &descriptor, &reason),
++        }
++    }
++    result
++}
++
++fn load_descriptor(
++    descriptor_path: &Path,
++) -> Result<(String, ModelProviderInfo, ModelsResponse), String> {
++    let text = fs::read_to_string(descriptor_path)
++        .map_err(|error| format!("could not read descriptor: {error}"))?;
++    let root = toml::from_str::<toml::Table>(&text)
++        .map_err(|error| format!("descriptor is not valid TOML: {error}"))?;
++    if !root.contains_key("model_providers") {
++        return Err("descriptor must contain exactly one `[model_providers.<id>]` table".into());
++    }
++    if root.keys().any(|key| {
++        !matches!(
++            key.as_str(),
++            "schema_version" | "kind" | "model_catalog_json" | "model_providers"
++        )
++    }) {
++        return Err("descriptor contains unsupported top-level fields".into());
++    }
++    let providers = root
++        .get("model_providers")
++        .and_then(toml::Value::as_table)
++        .ok_or_else(|| "`model_providers` must be a TOML table".to_string())?;
++    if providers.len() != 1 {
++        return Err("descriptor must contain exactly one `[model_providers.<id>]` table".into());
++    }
++    let (provider_id, provider_value) = providers.iter().next().expect("one provider checked");
++    validate_provider_id(provider_id)?;
++    let provider_table = provider_value
++        .as_table()
++        .ok_or_else(|| format!("[model_providers.{provider_id}] must be a TOML table"))?;
++    let catalog_value = root
++        .get("model_catalog_json")
++        .and_then(toml::Value::as_str)
++        .filter(|path| !path.trim().is_empty())
++        .ok_or_else(|| "`model_catalog_json` must be a non-empty path".to_string())?;
++    let provider: ModelProviderInfo = toml::Value::Table(provider_table.clone())
++        .try_into()
++        .map_err(|error| format!("provider definition is invalid: {error}"))?;
++    if provider.name.trim().is_empty() {
++        return Err("provider name must not be empty".into());
++    }
++    if provider.aws.is_some() {
++        return Err("provider aws is only supported for built-in Bedrock providers".into());
++    }
++    provider
++        .validate()
++        .map_err(|error| format!("provider definition is invalid: {error}"))?;
++
++    let catalog_path = resolve_catalog_path(descriptor_path, catalog_value);
++    let catalog_text = fs::read_to_string(&catalog_path).map_err(|error| {
++        format!(
++            "could not read model catalog `{}`: {error}",
++            catalog_path.display()
++        )
++    })?;
++    let catalog: ModelsResponse = serde_json::from_str(&catalog_text).map_err(|error| {
++        format!(
++            "model catalog `{}` is not valid Codex ModelsResponse JSON: {error}",
++            catalog_path.display()
++        )
++    })?;
++    if catalog.models.is_empty() {
++        return Err(format!(
++            "model catalog `{}` must contain at least one model",
++            catalog_path.display()
++        ));
++    }
++    Ok((provider_id.clone(), provider, catalog))
++}
++
++fn validate_provider_id(provider_id: &str) -> Result<(), String> {
++    if provider_id.is_empty()
++        || !provider_id
++            .bytes()
++            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
++    {
++        return Err("provider ID must match ^[A-Za-z0-9_-]+$".into());
++    }
++    Ok(())
++}
++
++fn resolve_catalog_path(descriptor_path: &Path, configured_path: &str) -> PathBuf {
++    let path = Path::new(configured_path);
++    if path.is_absolute() {
++        path.to_path_buf()
++    } else {
++        descriptor_path
++            .parent()
++            .unwrap_or_else(|| Path::new("."))
++            .join(path)
++    }
++}
++
++fn skip(warnings: &mut Vec<String>, descriptor: &Path, reason: &str) {
++    warnings.push(format!(
++        "external provider descriptor `{}` skipped: {reason}",
++        descriptor.display()
++    ));
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::fs;
++
++    fn write_catalog(path: &Path, empty: bool) {
++        let mut catalog = codex_models_manager::bundled_models_response().expect("bundled catalog");
++        if empty {
++            catalog.models.clear();
++        }
++        fs::write(path, serde_json::to_string(&catalog).expect("catalog JSON")).expect("catalog");
++    }
++
++    fn descriptor(path: &Path, id: &str, catalog: &str) {
++        fs::write(
++            path,
++            format!(
++                "schema_version = 1\nkind = \"external\"\nmodel_catalog_json = \"{catalog}\"\n\n[model_providers.{id}]\nname = \"Test\"\nbase_url = \"https://example.test/v1\"\n\n[model_providers.{id}.env_http_headers]\nx-example-api-key = \"TEST_KEY\"\n"
++            ),
++        )
++        .expect("descriptor");
++    }
++
++    #[test]
++    fn loads_static_catalogs_relative_to_descriptor_and_sorts_filenames() {
++        let temp = tempfile::tempdir().expect("tempdir");
++        let providers = temp.path().join(CONFIGURE_DIR).join(PROVIDERS_DIR);
++        fs::create_dir_all(&providers).expect("providers");
++        let catalogs = providers.join("catalogs");
++        fs::create_dir_all(&catalogs).expect("catalogs");
++        write_catalog(&catalogs.join("a.json"), false);
++        write_catalog(&catalogs.join("b.json"), false);
++        descriptor(&providers.join("01-first.toml"), "first", "catalogs/a.json");
++        descriptor(
++            &providers.join("02-second.toml"),
++            "second",
++            "catalogs/b.json",
++        );
++
++        let loaded = load(temp.path(), &HashSet::new());
++        assert_eq!(loaded.providers.len(), 2);
++        assert_eq!(loaded.catalogs.len(), 2);
++        assert!(loaded.warnings.is_empty());
++    }
++
++    #[test]
++    fn skips_missing_empty_malformed_duplicate_and_reserved_descriptors() {
++        let temp = tempfile::tempdir().expect("tempdir");
++        let providers = temp.path().join(CONFIGURE_DIR).join(PROVIDERS_DIR);
++        fs::create_dir_all(&providers).expect("providers");
++        write_catalog(&providers.join("good.json"), false);
++        write_catalog(&providers.join("empty.json"), true);
++        descriptor(&providers.join("01-good.toml"), "good", "good.json");
++        descriptor(&providers.join("02-duplicate.toml"), "good", "good.json");
++        descriptor(&providers.join("03-reserved.toml"), "openai", "good.json");
++        descriptor(&providers.join("04-empty.toml"), "empty", "empty.json");
++        fs::write(providers.join("05-malformed.toml"), "not = [valid").expect("malformed");
++
++        let loaded = load(temp.path(), &HashSet::new());
++        assert_eq!(loaded.providers.len(), 1);
++        assert_eq!(loaded.catalogs.len(), 1);
++        assert_eq!(
++            loaded.providers.keys().next().map(String::as_str),
++            Some("good")
++        );
++        assert_eq!(loaded.warnings.len(), 4);
++    }
++}
 diff --git a/codex-rs/core/src/guardian/review.rs b/codex-rs/core/src/guardian/review.rs
-index 145fa12..c34ab70 100644
+index 145fa12dcb..c34ab70e6d 100644
 --- a/codex-rs/core/src/guardian/review.rs
 +++ b/codex-rs/core/src/guardian/review.rs
 @@ -831,8 +831,7 @@ pub(super) async fn guardian_review_session_config(
@@ -1098,7 +1439,7 @@ index 145fa12..c34ab70 100644
          .get_model_info(
              guardian_model.as_str(),
 diff --git a/codex-rs/core/src/guardian/review_session.rs b/codex-rs/core/src/guardian/review_session.rs
-index 9ce3976..070032f 100644
+index 9ce3976537..070032f57e 100644
 --- a/codex-rs/core/src/guardian/review_session.rs
 +++ b/codex-rs/core/src/guardian/review_session.rs
 @@ -855,7 +855,7 @@ async fn spawn_guardian_review_session(
@@ -1122,10 +1463,18 @@ index 9ce3976..070032f 100644
          .get_model_info(
              params.model.as_str(),
 diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
-index 8463ae9..1c035c9 100644
+index 8463ae9e16..17799b38f6 100644
 --- a/codex-rs/core/src/lib.rs
 +++ b/codex-rs/core/src/lib.rs
-@@ -99,6 +99,7 @@ pub(crate) mod mentions {
+@@ -64,6 +64,7 @@ mod environment_selection;
+ pub mod exec;
+ pub mod exec_env;
+ mod exec_policy;
++mod external_provider_catalogs;
+ #[cfg(test)]
+ mod git_info_tests;
+ mod guardian;
+@@ -99,6 +100,7 @@ pub(crate) mod mentions {
      pub(crate) use crate::plugins::collect_explicit_plugin_mentions;
      pub(crate) use crate::plugins::collect_tool_mentions_from_messages;
  }
@@ -1135,7 +1484,7 @@ index 8463ae9..1c035c9 100644
  mod session_prefix;
 diff --git a/codex-rs/core/src/provider_runtime.rs b/codex-rs/core/src/provider_runtime.rs
 new file mode 100644
-index 0000000..e5c842a
+index 0000000000..e5c842a65d
 --- /dev/null
 +++ b/codex-rs/core/src/provider_runtime.rs
 @@ -0,0 +1,168 @@
@@ -1309,7 +1658,7 @@ index 0000000..e5c842a
 +mod tests;
 diff --git a/codex-rs/core/src/provider_runtime_tests.rs b/codex-rs/core/src/provider_runtime_tests.rs
 new file mode 100644
-index 0000000..b7387e3
+index 0000000000..b7387e3ed2
 --- /dev/null
 +++ b/codex-rs/core/src/provider_runtime_tests.rs
 @@ -0,0 +1,63 @@
@@ -1377,7 +1726,7 @@ index 0000000..b7387e3
 +    assert_eq!(runtime.provider.info().name, "umich-toolkit");
 +}
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
-index 04d4787..0b07d36 100644
+index 04d47879e0..e1c6d2c7c5 100644
 --- a/codex-rs/core/src/session/mod.rs
 +++ b/codex-rs/core/src/session/mod.rs
 @@ -39,6 +39,8 @@ use crate::image_preparation::ImageResizeNoticeMode;
@@ -1437,7 +1786,7 @@ index 04d4787..0b07d36 100644
 +                    config.model_provider.clone(),
 +                    Some(Arc::clone(&auth_manager)),
 +                    config.codex_home.to_path_buf(),
-+                    config.model_catalog.clone(),
++                    config.model_catalog_for_provider(&config.model_provider_id),
 +                );
 +                (runtime.provider, runtime.models_manager)
 +            };
@@ -1481,7 +1830,7 @@ index 04d4787..0b07d36 100644
              let new_config = notify_config_contributors
                  .then(|| self.build_effective_session_config(&state.session_configuration));
 diff --git a/codex-rs/core/src/session/review.rs b/codex-rs/core/src/session/review.rs
-index 0cff774..bc59405 100644
+index 0cff774179..bc59405b55 100644
 --- a/codex-rs/core/src/session/review.rs
 +++ b/codex-rs/core/src/session/review.rs
 @@ -15,16 +15,14 @@ pub(super) async fn spawn_review_thread(
@@ -1512,7 +1861,7 @@ index 0cff774..bc59405 100644
          history_mode: parent_turn_context.history_mode,
          parent_thread_id: parent_turn_context.parent_thread_id,
 diff --git a/codex-rs/core/src/session/rollout_reconstruction.rs b/codex-rs/core/src/session/rollout_reconstruction.rs
-index 66e0cf2..df79b39 100644
+index 66e0cf27ce..df79b39572 100644
 --- a/codex-rs/core/src/session/rollout_reconstruction.rs
 +++ b/codex-rs/core/src/session/rollout_reconstruction.rs
 @@ -323,6 +323,18 @@ impl Session {
@@ -1549,7 +1898,7 @@ index 66e0cf2..df79b39 100644
                      if let Some(replacement_history) = &compacted.replacement_history {
                          // This should actually never happen, because the reverse loop above (to build rollout_suffix)
 diff --git a/codex-rs/core/src/session/rollout_reconstruction_tests.rs b/codex-rs/core/src/session/rollout_reconstruction_tests.rs
-index 4f8c6ce..1b053c9 100644
+index 4f8c6ceebd..1b053c95cb 100644
 --- a/codex-rs/core/src/session/rollout_reconstruction_tests.rs
 +++ b/codex-rs/core/src/session/rollout_reconstruction_tests.rs
 @@ -10,6 +10,7 @@ use codex_history::InitialHistory;
@@ -1679,7 +2028,7 @@ index 4f8c6ce..1b053c9 100644
  async fn record_initial_history_ignores_security_risk_scores() {
      let (session, _turn_context) = make_session_and_context().await;
 diff --git a/codex-rs/core/src/session/session.rs b/codex-rs/core/src/session/session.rs
-index e0250ae..ffcf1ff 100644
+index e0250aee6d..e722ccc0ee 100644
 --- a/codex-rs/core/src/session/session.rs
 +++ b/codex-rs/core/src/session/session.rs
 @@ -10,6 +10,7 @@ use crate::config::ConstraintError;
@@ -1708,7 +2057,7 @@ index e0250ae..ffcf1ff 100644
  
      /// Desired configured inputs inherited by future turns.
      pub(super) step_settings: Arc<StepSettings>,
-@@ -372,6 +377,45 @@ impl SessionConfiguration {
+@@ -372,6 +377,46 @@ impl SessionConfiguration {
              next_configuration.windows_sandbox_level = windows_sandbox_level;
          }
  
@@ -1741,7 +2090,8 @@ index e0250ae..ffcf1ff 100644
 +                provider_info.clone(),
 +                self.auth_manager.clone(),
 +                self.codex_home.to_path_buf(),
-+                self.original_config_do_not_use.model_catalog.clone(),
++                self.original_config_do_not_use
++                    .model_catalog_for_provider(&qualified_model.provider_id),
 +            );
 +            next_configuration.provider = runtime.provider;
 +            next_configuration.models_manager = runtime.models_manager;
@@ -1755,7 +2105,7 @@ index e0250ae..ffcf1ff 100644
          if let Some(environments) = &updates.environments {
              next_configuration.legacy_fallback_cwd = environments.legacy_fallback_cwd.clone();
 diff --git a/codex-rs/core/src/session/step_activation.rs b/codex-rs/core/src/session/step_activation.rs
-index ffbe0eb..6317f98 100644
+index ffbe0ebd19..6317f98597 100644
 --- a/codex-rs/core/src/session/step_activation.rs
 +++ b/codex-rs/core/src/session/step_activation.rs
 @@ -11,6 +11,7 @@ use crate::config::ConstraintResult;
@@ -1810,7 +2160,7 @@ index ffbe0eb..6317f98 100644
                  self.features.enabled(Feature::Personality),
                  self.features.enabled(Feature::FastMode),
 diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
-index 3889978..e4dd38c 100644
+index 3889978a0a..e4dd38c500 100644
 --- a/codex-rs/core/src/session/tests.rs
 +++ b/codex-rs/core/src/session/tests.rs
 @@ -50,6 +50,7 @@ use codex_login::auth::AgentIdentityAuthPolicy;
@@ -2047,7 +2397,7 @@ index 3889978..e4dd38c 100644
              collaboration_mode,
              reasoning_summary: config.model_reasoning_summary,
 diff --git a/codex-rs/core/src/session/tests/guardian_tests.rs b/codex-rs/core/src/session/tests/guardian_tests.rs
-index c2a04bf..d48a99c 100644
+index c2a04bf531..d48a99cd00 100644
 --- a/codex-rs/core/src/session/tests/guardian_tests.rs
 +++ b/codex-rs/core/src/session/tests/guardian_tests.rs
 @@ -1267,6 +1267,7 @@ async fn guardian_subagent_does_not_inherit_parent_exec_policy_rules() {
@@ -2067,7 +2417,7 @@ index c2a04bf..d48a99c 100644
          skills_service,
          plugins_manager,
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 9b88c0f..8872399 100644
+index 9b88c0f5a8..8872399006 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
 @@ -162,8 +162,15 @@ pub(crate) async fn run_turn(
@@ -2107,7 +2457,7 @@ index 9b88c0f..8872399 100644
                      .refresh_if_new_etag(etag, turn_context.config.http_client_factory())
                      .await;
 diff --git a/codex-rs/core/src/session/turn_context.rs b/codex-rs/core/src/session/turn_context.rs
-index 04d04a7..950caa6 100644
+index 04d04a7bcb..950caa6836 100644
 --- a/codex-rs/core/src/session/turn_context.rs
 +++ b/codex-rs/core/src/session/turn_context.rs
 @@ -196,6 +196,7 @@ pub struct TurnContext {
@@ -2153,7 +2503,7 @@ index 04d04a7..950caa6 100644
                  .network_proxy
                  .load_full()
 diff --git a/codex-rs/core/src/session_startup_prewarm.rs b/codex-rs/core/src/session_startup_prewarm.rs
-index 4b61d92..228d17d 100644
+index 4b61d92b83..228d17d2c8 100644
 --- a/codex-rs/core/src/session_startup_prewarm.rs
 +++ b/codex-rs/core/src/session_startup_prewarm.rs
 @@ -316,7 +316,10 @@ async fn schedule_startup_prewarm_inner(
@@ -2169,7 +2519,7 @@ index 4b61d92..228d17d 100644
      client_session
          .prewarm_websocket(
 diff --git a/codex-rs/core/src/tasks/review.rs b/codex-rs/core/src/tasks/review.rs
-index 42ec842..1e5149e 100644
+index 42ec842e70..1e5149ec39 100644
 --- a/codex-rs/core/src/tasks/review.rs
 +++ b/codex-rs/core/src/tasks/review.rs
 @@ -128,7 +128,7 @@ async fn start_review_conversation(
@@ -2182,7 +2532,7 @@ index 42ec842..1e5149e 100644
          Arc::clone(&session),
          ctx.clone(),
 diff --git a/codex-rs/core/src/thread_manager.rs b/codex-rs/core/src/thread_manager.rs
-index 333e59d..33458e3 100644
+index 333e59d2d0..9d608dec5b 100644
 --- a/codex-rs/core/src/thread_manager.rs
 +++ b/codex-rs/core/src/thread_manager.rs
 @@ -345,6 +345,7 @@ pub(crate) struct ThreadManagerState {
@@ -2193,6 +2543,15 @@ index 333e59d..33458e3 100644
      environment_manager: Arc<EnvironmentManager>,
      starting_mcp_runtimes: std::sync::Mutex<Vec<std::sync::Weak<AtomicBool>>>,
      skills_service: Arc<HostSkillsService>,
+@@ -371,7 +372,7 @@ pub fn build_models_manager(
+     let provider = create_model_provider(config.model_provider.clone(), Some(auth_manager));
+     provider.models_manager(
+         config.codex_home.to_path_buf(),
+-        config.model_catalog.clone(),
++        config.model_catalog_for_provider(&config.model_provider_id),
+     )
+ }
+ 
 @@ -472,6 +473,7 @@ impl ThreadManager {
                  thread_created_tx,
                  thread_id_generator: default_thread_id_generator(),
@@ -2226,7 +2585,7 @@ index 333e59d..33458e3 100644
              skills_service: Arc::clone(&self.skills_service),
              plugins_manager: Arc::clone(&self.plugins_manager),
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents/spawn.rs b/codex-rs/core/src/tools/handlers/multi_agents/spawn.rs
-index 0a5325c..64d7440 100644
+index 0a5325c195..64d7440ccc 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents/spawn.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents/spawn.rs
 @@ -103,10 +103,11 @@ async fn handle_spawn_agent(
@@ -2243,7 +2602,7 @@ index 0a5325c..64d7440 100644
          turn.config.service_tier.as_deref(),
          args.service_tier.as_deref(),
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_common.rs b/codex-rs/core/src/tools/handlers/multi_agents_common.rs
-index 9fdfd48..e2ad9b1 100644
+index 9fdfd48962..e2ad9b1289 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_common.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_common.rs
 @@ -8,6 +8,7 @@ use crate::session::turn_context::TurnContext;
@@ -2358,7 +2717,7 @@ index 9fdfd48..e2ad9b1 100644
      model: &str,
      supported_reasoning_levels: &[ReasoningEffortPreset],
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs b/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs
-index 61a6240..ba66bac 100644
+index 61a6240f9a..ba66bacee1 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs
 @@ -134,7 +134,7 @@ async fn handle_spawn_agent(
@@ -2390,7 +2749,7 @@ index 61a6240..ba66bac 100644
                          .await,
                  ),
 diff --git a/codex-rs/model-provider-info/src/lib.rs b/codex-rs/model-provider-info/src/lib.rs
-index 65e2e4c..a5de431 100644
+index 65e2e4cbf7..a5de431d7e 100644
 --- a/codex-rs/model-provider-info/src/lib.rs
 +++ b/codex-rs/model-provider-info/src/lib.rs
 @@ -58,6 +58,79 @@ const CHAT_WIRE_API_REMOVED_ERROR: &str = "`wire_api = \"chat\"` is no longer su
@@ -2474,7 +2833,7 @@ index 65e2e4c..a5de431 100644
  #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, JsonSchema)]
  #[serde(rename_all = "lowercase")]
 diff --git a/codex-rs/model-provider-info/src/model_provider_info_tests.rs b/codex-rs/model-provider-info/src/model_provider_info_tests.rs
-index d08af0f..803bdf4 100644
+index d08af0ffb5..803bdf4890 100644
 --- a/codex-rs/model-provider-info/src/model_provider_info_tests.rs
 +++ b/codex-rs/model-provider-info/src/model_provider_info_tests.rs
 @@ -5,6 +5,45 @@ use pretty_assertions::assert_eq;

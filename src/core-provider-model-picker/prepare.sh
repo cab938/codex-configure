@@ -1,6 +1,6 @@
 #!/bin/sh
 # Prepare and optionally build the exact upstream revision used by this
-# spike. The caller owns the work directory; this script never removes it.
+# feature. The caller owns the work directory; this script never removes it.
 set -eu
 
 SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd -P)
@@ -86,10 +86,14 @@ git -C "$WORK_DIR" apply "$PATCH_FILE"
 
 if [ "$BUILD" -eq 1 ]; then
     # codex-cli contains the `codex app-server --stdio` command.
+    RUST_VERSION=$(rustc --version 2>/dev/null | awk '{print $2}') || die "rustc is unavailable; install Rust $MINIMUM_RUST_VERSION or newer"
+    [ -n "$RUST_VERSION" ] || die "could not determine the installed rustc version"
+    LOWEST_RUST_VERSION=$(printf '%s\n%s\n' "$MINIMUM_RUST_VERSION" "$RUST_VERSION" | sort -V | head -n 1)
+    [ "$LOWEST_RUST_VERSION" = "$MINIMUM_RUST_VERSION" ] || die "Rust $MINIMUM_RUST_VERSION or newer is required; found $RUST_VERSION"
     cargo build --release --manifest-path "$WORK_DIR/codex-rs/Cargo.toml" --package codex-cli
     BINARY=$WORK_DIR/codex-rs/target/release/codex
     [ -x "$BINARY" ] || die "cargo build completed without $BINARY"
     echo "built $BINARY"
 else
-    echo "prepared $WORK_DIR at $UPSTREAM_COMMIT with the spike patch"
+    echo "prepared $WORK_DIR at $UPSTREAM_COMMIT with the provider-model picker patch"
 fi

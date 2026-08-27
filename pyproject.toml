@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codex-configure"
-version = "0.1.0"
-description = "Switch stock Codex clients between OpenAI and U-M GPT Toolkit."
+version = "0.2.0"
+description = "Configure stock and dynamic Codex model-provider profiles."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["tomlkit>=0.13,<1"]
@@ -13,5 +13,9 @@ dependencies = ["tomlkit>=0.13,<1"]
 [project.scripts]
 codex-configure = "codex_configure.cli:main"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.setuptools]
+packages = ["codex_configure", "core_provider_model_picker"]
+package-dir = { codex_configure = "src/codex-configure", core_provider_model_picker = "src/core-provider-model-picker" }
+
+[tool.setuptools.package-data]
+core_provider_model_picker = ["*.env", "*.patch", "*.sh", "README.md"]

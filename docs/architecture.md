@@ -1,192 +1,185 @@
 # Architecture
 
-This document records the durable design and safety boundaries for `codex-configure`. Installation and everyday use belong in the project [README](../README.md).
+This document records the durable design, patch-maintenance boundary, and Linux acceptance procedure for `codex-configure`. Installation and ordinary commands belong in the project [README](../README.md).
 
 ## Scope
 
-`codex-configure` is an external launcher for Codex clients. It supports two environments in one shared `CODEX_HOME`:
+`codex-configure` supports one stock provider and any number of named U-M GPT Toolkit services in a shared `CODEX_HOME`:
 
-- OpenAI, using the user's existing Codex authentication and upstream model catalog; and
-- U-M GPT Toolkit, using the OpenAI / Azure route and a provider-specific API key.
+- OpenAI uses Codex's existing ChatGPT authentication and bundled model catalog.
+- Each U-M service uses its own Portkey API key, static selected catalog, and short provider name.
 
-It launches either the Codex CLI or Codex in the ChatGPT desktop app on Linux. The settled launcher does not modify the installed ChatGPT package or renderer. The qualified provider-model extension selects a pinned patched Codex backend while preserving the existing App Server wire schema; its design and packaging boundary are recorded in the [spike](spike-core-provider-model-picker.md) and [Linux productionization plan](linux-provider-picker-productionization.md).
+It deliberately provides two operating modes.
 
-The UI calls these choices **environments** because switching affects provider routing, credentials, catalog, and launch behavior, not just the default model.
+| Invocation | Core | Provider choice |
+| --- | --- | --- |
+| `run openai/cli` or `run openai/desktop` | Stock | OpenAI fixed for that launch |
+| `run name/cli` or `run name/desktop` | Stock | Named U-M service fixed for that launch |
+| `run cli` or `run desktop` | Patched | Qualified provider/model in the existing picker |
 
-## System boundary
+Per-launch profiles support macOS and Linux. Dynamic Picker is supported and acceptance-tested on Linux only.
 
-Codex keeps user state under `CODEX_HOME`, normally `~/.codex`. The materialized active configuration at `$CODEX_HOME/config.toml` remains the shared credential, provider-definition, and recovery boundary. The qualified provider-model backend additionally supplies both configured providers through the existing model-list and string-valued model-selection APIs.
+## System Boundary
 
-The launcher owns only the model-routing fields it installs:
-
-- `model`;
-- `model_provider`;
-- `model_catalog_json`; and
-- `[model_providers.umich-toolkit]`.
-
-It structurally merges those fields with the user's configuration. Unknown settings and unrelated provider definitions are preserved. If Desktop changes non-routing preferences while an environment is active, the next switch adopts those changes into the shared base. If another process changes the routing owned by `codex-configure`, the launcher refuses to overwrite it.
-
-Official Codex references:
-
-- [Advanced configuration and profiles](https://learn.chatgpt.com/docs/config-file/config-advanced)
-- [Configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference)
-- [Authentication](https://learn.chatgpt.com/docs/auth)
-- [Managed configuration](https://learn.chatgpt.com/docs/enterprise/managed-configuration)
-
-Managed configuration has higher precedence than the user configuration. `doctor` reports known `/etc/codex/managed_config.toml` and `/etc/codex/requirements.toml` files. Other organization-managed layers may also override user settings; the launcher does not modify or try to bypass any of them.
-
-## Components and data flow
+Desktop and CLI remain clients of Codex Core. The patch changes provider/model routing, not execution-host routing:
 
 ```text
-User
-  |
-  v
-Interactive CLI
-  |-- ConfigManager ----> base + environment overlay ----> active config.toml
-  |-- CatalogService ---> U-M aliases + bundled catalog --> selected catalog
-  `-- Launcher ---------> Codex CLI or ChatGPT Desktop
-                              |
-                              `-- U-M key only for a U-M child process
+Desktop or CLI
+    |
+    | existing string model field: provider::model
+    v
+Codex App Server / Core task
+    |-- existing execution environment --> local or remote execution host
+    `-- selected provider runtime -------> OpenAI or named U-M service
 ```
 
-### Interactive CLI
+The execution host, working directory, sandbox, approvals, collaboration mode, and task identity are independent of the selected model provider.
 
-The entry point owns the user choices and their order:
+The desktop renderer is not patched. `CODEX_CLI_PATH` tells a compatible Linux desktop package which Codex CLI/App Server executable to start. This hook was observed in the official and community-packaged Linux applications, but it is not a documented stable OpenAI interface and must be retested after desktop updates.
 
-- OpenAI goes directly to the Desktop/CLI choice.
-- U-M displays the single OpenAI / Azure provider, a persistent multi-model selector, a default-model selector, and the Desktop/CLI choice.
+## Runtime Layout
 
-Immediately before launch, it prints the active environment, profile directory, and selected profile.
-
-### ConfigManager
-
-`ConfigManager` inventories and initializes the runtime, preserves the original configuration, reconciles safe external edits, writes profiles and catalogs, activates environments transactionally, restores OpenAI, and supplies read-only health checks.
-
-### CatalogService
-
-`CatalogService` intersects:
-
-1. model aliases advertised by U-M; and
-2. model metadata bundled with the installed Codex CLI.
-
-This gives stock Codex complete metadata for each model exposed by the launcher. If live U-M discovery fails or has no compatible entries, a bounded maintained fallback is used. The service currently marks `gpt-5.6-terra` as `verified`; compatible U-M-advertised entries without a recorded canary are `listed`.
-
-The resulting selection is written as an immutable content-addressed catalog. Catalog presence means only that the launcher can describe a model. It is not an entitlement guarantee, and a provider can still reject a listed model for account, deployment, or budget reasons.
-
-### Launcher
-
-The launcher verifies that all known Codex CLI and ChatGPT/Desktop processes are stopped before switching. It then starts the selected client with the activated configuration.
-
-On Linux it normally resolves `chatgpt` from `PATH`. `CODEX_DESKTOP_COMMAND` is an explicit override for nonstandard installations or VM flags. The provider-picker build is executed directly for CLI launches and supplied to the Linux Desktop child through `CODEX_CLI_PATH`; that variable is scoped to the child process rather than installed globally.
-
-## Runtime layout
-
-The project preserves Codex's existing home and adds one tool-owned subtree:
+The tool adds one subtree to the user's existing Codex home:
 
 ```text
 $CODEX_HOME/
-|-- config.toml                         # effective active configuration
-|-- auth.json                           # existing Codex auth; never tool-owned
-|-- sessions/                           # shared tasks; never tool-owned
-|-- skills/                             # shared skills; never tool-owned
-|-- ...                                 # other shared Codex state
+|-- auth.json                          # Codex-owned; never modified
+|-- config.toml                        # materialized active configuration
+|-- sessions/                          # shared task history; never copied
 `-- codex-configure/
-    |-- .env                            # U-M key, mode 0600, never backed up
-    |-- state.toml                      # active environment and config hash
-    |-- base/
-    |   |-- config.toml                 # maintained shared OpenAI base
-    |   `-- original-config.toml        # immutable first-run config
+    |-- .env                           # all named provider keys, mode 0600
+    |-- state.toml                     # active profile and config hash
+    |-- providers.d/
+    |   `-- <shortname>.toml           # one non-secret provider descriptor
+    |-- catalogs/
+    |   `-- <shortname>.json           # selected Codex ModelsResponse
     |-- profiles/
     |   |-- openai/
-    |   |   |-- profile.toml
-    |   |   `-- config.toml
-    |   `-- umich/
-    |       |-- profile.toml
-    |       `-- config.toml
-    |-- catalogs/
-    |   `-- umich-openai-azure-HASH.json
+    |   `-- <shortname>/
+    |-- base/
+    |   |-- config.toml                # maintained OpenAI base
+    |   `-- original-config.toml       # immutable first-run snapshot
     |-- locks/
-    |   `-- activate.lock
     `-- recovery/
-        |-- last-good-config.toml
-        |-- last-good-state.toml
-        |-- pending-previous-config.toml
-        |-- pending-previous-state.toml
-        `-- transaction.json
 ```
 
-The pending files and transaction marker exist only during a promotion. Directories use mode `0700`; tool-owned state, profiles, catalogs, and credentials use mode `0600`.
+Tool-owned directories use mode `0700`; state, descriptors, catalogs, profiles, recovery data, and credentials use mode `0600`.
 
-Backups are deliberately narrow. The launcher never recursively copies `CODEX_HOME`, so recovery data does not sweep up `auth.json`, the `.env`, task databases, logs, plugins, or other unrelated state.
+Initialization is considered complete only when the base/recovery state and at least one valid external descriptor/catalog pair exist. A user may therefore copy a complete non-secret provider layout and supply its declared keys through the environment instead of repeating interactive setup.
 
-## Credential boundary
+## Provider Contract
 
-OpenAI authentication remains under Codex's ownership. `codex-configure` does not edit or replace `auth.json`.
+A short name is lowercase ASCII alphanumeric text separated by hyphens or underscores. `openai`, `ollama`, and `lmstudio` are reserved. Hyphens normalize to underscores for the credential name, so `research-2026` uses `RESEARCH_2026_API_KEY`; names that would collide after normalization are rejected.
 
-The U-M key is resolved in this order:
-
-1. `UMICH_TOOLKIT_API_KEY` in the launch environment;
-2. a private file supplied with `--env-file PATH`; or
-3. `$CODEX_HOME/codex-configure/.env`.
-
-The generated U-M provider configuration contains the environment-variable name, not its value:
+Each descriptor is a Core configuration fragment with exactly one provider table and one mandatory catalog:
 
 ```toml
-[model_providers.umich-toolkit]
-name = "U-M GPT Toolkit - OpenAI / Azure"
+schema_version = 1
+kind = "umich-toolkit"
+model_catalog_json = "../catalogs/teaching.json"
+
+[model_providers.teaching]
+name = "U-M GPT Toolkit - teaching"
 base_url = "https://api.portkey.ai/v1"
 wire_api = "responses"
-env_http_headers = { "x-portkey-api-key" = "UMICH_TOOLKIT_API_KEY" }
+requires_openai_auth = false
+env_http_headers = { "x-portkey-api-key" = "TEACHING_API_KEY" }
 ```
 
-The launcher supplies the key only to the U-M child process. It never writes the value into a profile, catalog, state file, active `config.toml`, backup, or diagnostic message. A keychain is not required.
+The provider ID is inferred from the sole table key. A descriptor never contains a key value.
 
-The institutional setup originally used Codex's shared OpenAI credential slot. Investigation demonstrated that the U-M route works with a distinct Portkey header, so replacing the user's OpenAI authentication is unnecessary.
+`init` gets the key-scoped list from `https://api.toolkit.umgpt.umich.edu/v1/models` using `x-portkey-api-key`. It then joins endpoint IDs to complete metadata from `codex debug models --bundled`. All advertised IDs are shown, but only models with metadata supported by the installed Core can be selected. The generated JSON includes only selected complete entries.
 
-## Activation and recovery
+Static catalogs are authoritative. Neither `codex-configure` nor the patch treats a missing catalog as "all models," because doing so would require inventing model capabilities and prompt metadata. A bad descriptor or catalog is warned about and skipped at Core startup.
 
-Every switch or restore uses this sequence:
+Catalog presence is discovery, not entitlement. A provider can still reject a listed model because of deployment access, account policy, or budget.
 
-1. acquire the per-home activation lock;
-2. recover or finalize an interrupted earlier transaction;
-3. reconcile safe non-routing changes to the active configuration;
-4. validate the selected overlay and catalog;
-5. save the previous consistent config/state pair;
-6. write a transaction marker;
-7. atomically replace the active configuration and state;
-8. save the new pair as last known good; and
-9. remove the transaction files.
+## Credentials
 
-If execution stops between the live-file writes, the next invocation restores the saved prior pair. If both target files were committed, it finalizes that pair. The launcher does not silently kill running clients and does not guess when required recovery state is missing or inconsistent.
+OpenAI authentication remains entirely under Codex's ownership. This project does not edit or replace `auth.json`.
 
-`restore` activates the maintained OpenAI base. `restore --original` activates the immutable first-run snapshot. Both use the same guarded transaction path as a normal switch.
+Named keys live in `$CODEX_HOME/codex-configure/.env`. An explicitly exported variable with the descriptor's exact name overrides its stored value for that process. Credential loading is filtered to names declared by installed descriptors; unrelated API keys from the shell are not copied into the tool's credential map.
 
-## Shared state behavior
+A stock OpenAI child receives no U-M credentials. A stock named-provider child receives only its key. A Dynamic Picker child receives the keys for all providers it exposes and refuses to launch if one is missing. Secrets are never written into active configuration, descriptors, catalogs, profiles, backups, diagnostics, patch resources, or canary output.
 
-Tasks, history, skills, plugins, MCP configuration, memories, trust settings, and other non-routing state remain shared because both providers use one `CODEX_HOME`.
+## Activation And Recovery
 
-With the qualified provider-model backend, the selected provider and model are committed to the task between turns and restored on resume. A user can change providers through the existing model picker without changing the execution host or forking the task. Provider-bound reasoning is removed at a provider boundary, while user messages, assistant messages, and tool history remain available.
+The first initialization snapshots the existing `config.toml` before activation. Every switch or restore then uses the same transaction:
 
-## Durable decisions
+1. Acquire the per-home activation lock.
+2. Recover or finalize an interrupted earlier transaction.
+3. Reconcile safe non-routing changes written by Codex.
+4. Verify that tool-owned routing fields were not changed externally.
+5. Write the prior consistent config/state pair to recovery.
+6. Atomically promote the new config and state.
+7. Record the new pair as last known good and clear the transaction.
 
-- Remain an external launcher; do not modify the installed ChatGPT package or renderer.
-- Support both CLI and Desktop through one interaction.
-- Preserve one shared `CODEX_HOME` and materialize one active configuration.
-- Keep OpenAI authentication untouched.
-- Store the U-M key in a protected file by default; do not require a keychain.
-- Limit the current U-M interface to OpenAI / Azure.
-- Let users select multiple compatible models and one default.
-- Treat U-M aliases and catalog entries as discovery, not entitlement.
-- Treat activation as a recoverable transaction.
-- Preserve unrelated user configuration and refuse ambiguous routing overwrites.
-- Detect managed configuration conflicts without trying to override policy.
-- Make Linux the first supported packaging and documentation target.
+The tool owns only the routing fields it materializes: `model`, `model_provider`, `model_catalog_json`, and the selected provider table. Other settings and unrelated provider definitions are retained. An ambiguous routing edit is rejected rather than overwritten.
 
-## Non-goals and current constraints
+Patched Core may persist a qualified model while Dynamic Picker is active. On a stock OpenAI launch, an `openai::` prefix is removed and an external-qualified model is omitted, allowing stock Core to choose a supported OpenAI default instead of sending an external namespace to ChatGPT.
 
-- AWS Bedrock, Google, local providers, and Portkey administration are outside the current interface.
-- Concurrent environments in one `CODEX_HOME` are not supported.
-- The launcher does not manage all Codex settings or patch the Desktop renderer's model-picker behavior.
-- It does not guarantee that every advertised U-M model is callable by every key.
-- It does not distribute or change administrator-managed Codex policy.
-- Packaging and documentation for other operating systems are outside the first release scope.
+`restore` activates the maintained OpenAI base. `restore --original` activates the immutable first-run snapshot. Backups are narrow and never recursively copy `CODEX_HOME`, so credentials, authentication, sessions, logs, skills, and plugins are not swept into recovery data.
+
+## Dynamic Core Patch
+
+The canonical patch, upstream pin, build helper, and canary live under `src/core-provider-model-picker/`. The upstream repository is not vendored.
+
+Most new startup discovery logic is isolated in the added Core module `external_provider_catalogs.rs`. Surgical hooks:
+
+- load descriptors once while `Config` is constructed;
+- merge valid provider definitions and retain their static catalogs;
+- aggregate OpenAI and external catalogs for App Server `model/list`;
+- parse the first `::` in the existing string-valued model field;
+- resolve a provider-specific model manager/client at committed turn boundaries; and
+- persist and restore the selected provider with existing task settings.
+
+The picker displays and returns the same qualified value, for example `teaching::gpt-5.6-terra`. Core sends only `gpt-5.6-terra` to that provider. Unqualified models retain upstream behavior and use the task's current provider.
+
+A user may change provider between completed turns without forking. Provider transport, authentication, sticky-routing state, and prompt-cache state are turn-scoped and rebuilt for the selected provider. Provider reasoning items can contain opaque state another provider cannot validate, so they are removed at a provider boundary while user, assistant, and tool history remain. Resume reconstructs the same boundaries from persisted settings.
+
+## Patch Refresh
+
+OpenAI publishes Codex frequently, so the patch is deliberately pinned and source-based. To refresh it:
+
+1. Choose an official `openai/codex` commit and update `src/core-provider-model-picker/upstream-pin.env` only as part of the same change as the patch.
+2. Prepare a fresh dedicated checkout; do not develop against an installed desktop package or vendor the upstream tree.
+3. Apply the prior patch, resolve only upstream conflicts required by the existing behavior, and keep new registry logic in its own Rust module.
+4. Regenerate `codex-provider-model-picker.patch` as a binary-capable Git diff from the clean pin, including added files.
+5. Run `git apply --check`, the focused external-catalog/parser/session/App Server checks recorded beside the patch, and one release build.
+6. Run the Linux VM acceptance below before claiming the refreshed pin works with Desktop.
+
+`codex-configure patch [PATH]` implements the user build path. It validates the Git root and canonical remote, checks out the exact pin without reset or broad cleanup, applies the patch to the index, checks the pinned minimum Rust version, builds `codex-cli --release`, verifies the executable, and safely recognizes an idempotent rerun. It refuses symlinks, wrong remotes, unrelated dirty state, and a patch that no longer applies.
+
+## Manual Linux VM Acceptance
+
+This is an agent-invoked release check, not CI. Use a dedicated Linux VM account and an isolated acceptance directory. Do not point tests at that account's normal `~/.codex`.
+
+1. Confirm the VM is running, SSH is reachable, the desktop package is installed, and enough disk is available. Discover live VM state rather than assuming an address or libvirt alias.
+2. Build once on a host with Rust and disk space using `codex-configure patch /absolute/dedicated/path`. Copy only the resulting binary, this repository, and the intended `auth.json` into the VM acceptance directory. Set copied authentication to mode `0600`; never copy the whole Codex home.
+3. Set an isolated `CODEX_HOME` in the VM acceptance directory. Run `codex-configure init` twice with disposable low-budget keys and distinct short names. Confirm two descriptors, two catalogs, two distinct `.env` variables, mode `0600`, and no key text outside `.env`.
+4. Run the stdlib canary in `src/core-provider-model-picker/app_server_canary.py` once for each external provider. Supply the patched binary, isolated Codex home, provider short name, and an isolated task directory. The canary proves qualified catalog entries, OpenAI-to-external continuity in one task, and provider restoration after App Server restart without printing credentials.
+5. Start `codex-configure run desktop` with `CODEX_CLI_PATH` set to the copied binary. For a graphics-limited VM, set `CODEX_DESKTOP_COMMAND='chatgpt --use-angle=swiftshader'`.
+6. In a private VM display, verify the real picker shows `openai::...` and both external namespaces. Make one exact-marker turn with OpenAI, change to each named provider between turns, return to OpenAI, restart Desktop, and resume the same task. Confirm the semantic markers survive and the last provider/model is restored.
+7. Run `run first/cli`, `run second/cli`, and `run openai/cli` with exact-marker prompts to cover stock Core profile launches. Confirm stock launches remove an inherited `CODEX_CLI_PATH`.
+8. Compare the normal Codex home's pre/post hashes and permissions. It must be unchanged. Retain only non-secret logs, task IDs, versions, and screenshots needed to identify the tested pin and desktop build.
+
+The automated canary is the fast regression signal. Desktop acceptance is intentionally one bounded visual pass because picker rendering and the `CODEX_CLI_PATH` handoff cannot be proven by a Core build alone.
+
+## Prior Acceptance Evidence
+
+The original Linux spike demonstrated a stock desktop loading the patched Core through `CODEX_CLI_PATH`, qualified OpenAI and U-M entries in the real picker, OpenAI to U-M to OpenAI turns in one task, and restart/resume restoration. That run also exposed the provider-reasoning boundary that the final patch now handles.
+
+A Desktop `GET /backend-api/accounts/.../settings` 401 with `Must use workspace account for this operation` occurred with both stock and patched Core before any U-M selection. Desktop stayed signed in and both providers continued working. The A/B result treats that account-settings request as independent of binary patching; it is not evidence of patch attestation or an OpenAI sign-out.
+
+## Durable Decisions
+
+- Keep one shared `CODEX_HOME`; do not create a second task universe per provider.
+- Leave execution-host routing unchanged.
+- Keep provider/model in the existing string field as `provider::model`.
+- Allow provider changes only at committed turn boundaries.
+- Keep the desktop renderer and installed package unchanged.
+- Require complete static external catalogs.
+- Keep keys in one protected tool-owned file rather than a keychain or `auth.json`.
+- Preserve and recover `config.toml` transactionally.
+- Pin and rebuild the smallest maintainable Core patch instead of vendoring Codex.
+- Claim Dynamic Picker support on Linux only until another platform passes the same acceptance boundary.

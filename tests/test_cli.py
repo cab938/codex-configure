@@ -17,14 +17,21 @@ from codex_configure.cli import (
     Launcher,
     parse_model_selection,
     run_doctor,
-    run_interactive,
+    run_init,
+    run_run,
     run_restore,
 )
 from codex_configure.errors import UserFacingError
 from codex_configure.runtime import ConfigManager
 
 
-def model(slug: str, display_name: str, status: str = "listed") -> ModelChoice:
+def model(
+    slug: str,
+    display_name: str,
+    status: str = "listed",
+    *,
+    selectable: bool = True,
+) -> ModelChoice:
     return ModelChoice(
         slug=slug,
         display_name=display_name,
@@ -41,11 +48,13 @@ def model(slug: str, display_name: str, status: str = "listed") -> ModelChoice:
             "priority": 1,
             "context_window": 272000,
         },
+        selectable=selectable,
     )
 
 
 class FakeCatalogService:
     def __init__(self) -> None:
+        self.api_keys: list[str | None] = []
         self.result = CatalogResult(
             models=(
                 model("gpt-5.6-sol", "GPT-5.6 Sol"),
@@ -55,7 +64,8 @@ class FakeCatalogService:
             source="test catalog",
         )
 
-    def discover(self) -> CatalogResult:
+    def discover(self, api_key: str | None = None) -> CatalogResult:
+        self.api_keys.append(api_key)
         return self.result
 
     def build_selected_catalog(self, models: list[ModelChoice]) -> dict[str, object]:
@@ -71,6 +81,7 @@ class FakeLauncher:
     def __init__(self) -> None:
         self.validated: list[str] = []
         self.launches: list[tuple[list[str], dict[str, str]]] = []
+        self.removed_environment: list[tuple[str, ...]] = []
         self.stopped_checks = 0
 
     def validate(self, target: str, requires_environment: bool = False) -> list[str]:
@@ -83,8 +94,14 @@ class FakeLauncher:
     def running_clients(self) -> list[str]:
         return []
 
-    def launch(self, command: list[str], extra_environment: dict[str, str]) -> int:
+    def launch(
+        self,
+        command: list[str],
+        extra_environment: dict[str, str],
+        remove_environment: tuple[str, ...] = (),
+    ) -> int:
         self.launches.append((command, extra_environment))
+        self.removed_environment.append(remove_environment)
         return 0
 
 
@@ -99,144 +116,233 @@ class CliFlowTests(unittest.TestCase):
         )
         return temporary, home
 
-    def test_openai_skips_provider_and_model_steps(self) -> None:
+    def save_profile(
+        self,
+        manager: ConfigManager,
+        shortname: str,
+        key: str,
+        service: FakeCatalogService | None = None,
+    ) -> None:
+        service = service or FakeCatalogService()
+        manager.initialize()
+        choices = list(service.result.models)
+        manager.save_umich_provider(
+            shortname,
+            key,
+            service.build_selected_catalog(choices),
+            selected_models=[choice.slug for choice in choices],
+            default_model="gpt-5.6-terra",
+            catalog_source=service.result.source,
+        )
+
+    def test_init_creates_named_provider_catalog_and_private_key(self) -> None:
         temporary, home = self.make_home()
         self.addCleanup(temporary.cleanup)
+        original = (home / "config.toml").read_text(encoding="utf-8")
+        service = FakeCatalogService()
         output = io.StringIO()
-        launcher = FakeLauncher()
 
-        result = run_interactive(
-            codex_home=home,
-            console=Console(io.StringIO("1\n2\n"), output),
-            environ={},
-            launcher=launcher,
+        result = run_init(
+            home,
+            Console(io.StringIO("2\nteaching\ntest-secret\nall\n\n"), output),
+            {},
+            catalog_service=service,
         )
 
         self.assertEqual(result, 0)
-        text = output.getvalue()
-        self.assertNotIn("Choose provider", text)
-        self.assertNotIn("Choose models", text)
-        self.assertIn(f"Profiles directory: {home / 'codex-configure' / 'profiles'}", text)
-        self.assertEqual(launcher.validated, ["cli"])
-        self.assertEqual(launcher.stopped_checks, 1)
-        self.assertEqual(launcher.launches, [(["fake-cli"], {})])
-        self.assertEqual(
-            (home / "config.toml").read_text(encoding="utf-8"),
-            'model = "gpt-5.5"\n\n[features]\nexample = true\n\n'
-            '[model_providers.existing]\nname = "Existing provider"\nbase_url = "http://127.0.0.1:1337/v1"\n',
-        )
-
-    def test_umich_multi_select_writes_catalog_and_default(self) -> None:
-        temporary, home = self.make_home()
-        self.addCleanup(temporary.cleanup)
-        output = io.StringIO()
-        launcher = FakeLauncher()
         manager = ConfigManager(home)
+        self.assertTrue(manager.is_initialized())
+        self.assertEqual(service.api_keys, ["test-secret"])
+        descriptor_path = manager.paths.providers / "teaching.toml"
+        descriptor_text = descriptor_path.read_text(encoding="utf-8")
+        descriptor = tomlkit.parse(descriptor_text)
+        self.assertEqual(descriptor["model_catalog_json"], "../catalogs/teaching.json")
+        self.assertEqual(
+            descriptor["model_providers"]["teaching"]["env_http_headers"]["x-portkey-api-key"],
+            "TEACHING_API_KEY",
+        )
+        catalog = json.loads((manager.paths.catalogs / "teaching.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            [entry["slug"] for entry in catalog["models"]],
+            ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+        )
+        self.assertEqual(stat.S_IMODE(manager.paths.env_file.stat().st_mode), 0o600)
+        self.assertEqual(manager.load_credentials({}), {"TEACHING_API_KEY": "test-secret"})
+        self.assertNotIn("test-secret", descriptor_text)
+        self.assertNotIn("test-secret", json.dumps(catalog))
+        self.assertNotIn("test-secret", output.getvalue())
+        self.assertEqual((home / "config.toml").read_text(encoding="utf-8"), original)
 
-        result = run_interactive(
-            codex_home=home,
-            console=Console(io.StringIO("2\n1\n1,3\n2\n1\n"), output),
-            environ={"UMICH_TOOLKIT_API_KEY": "test-secret"},
+    def test_two_profiles_have_distinct_keys_and_catalogs(self) -> None:
+        temporary, home = self.make_home()
+        self.addCleanup(temporary.cleanup)
+        manager = ConfigManager(home)
+        self.save_profile(manager, "teaching", "first-secret")
+        self.save_profile(manager, "research-2026", "second-secret")
+
+        self.assertEqual(
+            [item.id for item in manager.list_providers(include_stock=False)],
+            ["research-2026", "teaching"],
+        )
+        self.assertEqual(
+            manager.load_credentials({}),
+            {
+                "RESEARCH_2026_API_KEY": "second-secret",
+                "TEACHING_API_KEY": "first-secret",
+            },
+        )
+        for shortname in ("teaching", "research-2026"):
+            self.assertTrue((manager.paths.providers / f"{shortname}.toml").is_file())
+            self.assertTrue((manager.paths.catalogs / f"{shortname}.json").is_file())
+
+    def test_init_all_excludes_endpoint_models_without_codex_metadata(self) -> None:
+        temporary, home = self.make_home()
+        self.addCleanup(temporary.cleanup)
+        service = FakeCatalogService()
+        service.result = CatalogResult(
+            models=(
+                model("gpt-5.6-terra", "GPT-5.6 Terra", "verified"),
+                model("unrecognized-model", "unrecognized-model", "unsupported", selectable=False),
+            ),
+            source="test catalog",
+        )
+        output = io.StringIO()
+
+        run_init(
+            home,
+            Console(io.StringIO("2\nsandbox\ntest-secret\nall\n\n"), output),
+            {},
+            catalog_service=service,
+        )
+
+        catalog = json.loads(
+            (home / "codex-configure" / "catalogs" / "sandbox.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual([entry["slug"] for entry in catalog["models"]], ["gpt-5.6-terra"])
+        self.assertIn("unsupported by this Codex build", output.getvalue())
+
+    def test_stock_named_run_uses_one_key_and_removes_patched_core(self) -> None:
+        temporary, home = self.make_home()
+        self.addCleanup(temporary.cleanup)
+        manager = ConfigManager(home)
+        self.save_profile(manager, "teaching", "file-secret")
+        launcher = FakeLauncher()
+        output = io.StringIO()
+
+        result = run_run(
+            home,
+            "teaching/cli",
+            Console(io.StringIO(), output),
+            {"CODEX_CLI_PATH": "/wrong/patched/codex"},
             manager=manager,
-            catalog_service=FakeCatalogService(),
             launcher=launcher,
         )
 
         self.assertEqual(result, 0)
+        self.assertEqual(launcher.launches, [(["fake-cli"], {"TEACHING_API_KEY": "file-secret"})])
+        self.assertEqual(launcher.removed_environment, [("CODEX_CLI_PATH",)])
         active = tomlkit.parse((home / "config.toml").read_text(encoding="utf-8"))
-        catalog_path = Path(str(active["model_catalog_json"]))
-        self.assertTrue(catalog_path.name.startswith("umich-openai-azure-"))
-        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-        self.assertEqual([entry["slug"] for entry in catalog["models"]], ["gpt-5.6-sol", "gpt-5.6-luna"])
-
-        self.assertEqual(active["model"], "gpt-5.6-luna")
-        self.assertEqual(active["model_provider"], "umich-toolkit")
-        self.assertTrue(active["features"]["example"])
-        self.assertEqual(active["model_providers"]["existing"]["name"], "Existing provider")
-        self.assertEqual(
-            active["model_providers"]["umich-toolkit"]["env_http_headers"]["x-portkey-api-key"],
-            "UMICH_TOOLKIT_API_KEY",
-        )
-        self.assertNotIn("test-secret", (home / "config.toml").read_text(encoding="utf-8"))
-        self.assertEqual(launcher.validated, ["desktop"])
-        self.assertEqual(launcher.stopped_checks, 1)
-        self.assertEqual(launcher.launches[0][1], {"UMICH_TOOLKIT_API_KEY": "test-secret"})
-        text = output.getvalue()
-        location = text.index(f"Profiles directory: {manager.paths.profiles}")
-        launching = text.index("Launching Codex Desktop")
-        self.assertLess(location, launching)
-
-    def test_umich_reads_default_private_env_file(self) -> None:
-        temporary, home = self.make_home()
-        self.addCleanup(temporary.cleanup)
-        credential_file = home / "codex-configure" / ".env"
-        credential_file.parent.mkdir(parents=True)
-        credential_file.write_text("UMICH_TOOLKIT_API_KEY=file-secret\n", encoding="utf-8")
-        credential_file.chmod(0o600)
-        launcher = FakeLauncher()
-
-        result = run_interactive(
-            codex_home=home,
-            console=Console(io.StringIO("2\n1\n\n\n2\n"), io.StringIO()),
-            environ={},
-            catalog_service=FakeCatalogService(),
-            launcher=launcher,
-        )
-
-        self.assertEqual(result, 0)
-        self.assertEqual(launcher.launches[0][1], {"UMICH_TOOLKIT_API_KEY": "file-secret"})
+        self.assertEqual(active["model_provider"], "teaching")
         self.assertNotIn("file-secret", (home / "config.toml").read_text(encoding="utf-8"))
+        self.assertLess(
+            output.getvalue().index("Profiles directory:"),
+            output.getvalue().index("Launching teaching/cli"),
+        )
 
-    def test_saved_selection_is_checked_on_next_run(self) -> None:
+    def test_missing_key_does_not_activate_named_profile(self) -> None:
         temporary, home = self.make_home()
         self.addCleanup(temporary.cleanup)
         manager = ConfigManager(home)
-        catalog_service = FakeCatalogService()
-        first_output = io.StringIO()
-        run_interactive(
-            codex_home=home,
-            console=Console(io.StringIO("2\n1\n1,3\n1\n2\n"), first_output),
-            environ={"UMICH_TOOLKIT_API_KEY": "test-secret"},
-            prepare_only=True,
-            manager=manager,
-            catalog_service=catalog_service,
-            launcher=FakeLauncher(),
-        )
+        self.save_profile(manager, "teaching", "temporary-secret")
+        manager.paths.env_file.unlink()
+        before = (home / "config.toml").read_text(encoding="utf-8")
 
-        second_output = io.StringIO()
-        run_interactive(
-            codex_home=home,
-            console=Console(io.StringIO("2\n1\n\n\n2\n"), second_output),
-            environ={"UMICH_TOOLKIT_API_KEY": "test-secret"},
-            prepare_only=True,
-            manager=manager,
-            catalog_service=catalog_service,
-            launcher=FakeLauncher(),
-        )
-        profile = tomlkit.parse(
-            (home / "codex-configure" / "profiles" / "umich" / "profile.toml").read_text(
-                encoding="utf-8"
+        with self.assertRaisesRegex(UserFacingError, "No credential found"):
+            run_run(
+                home,
+                "teaching/cli",
+                Console(io.StringIO(), io.StringIO()),
+                {},
+                manager=manager,
+                launcher=FakeLauncher(),
             )
-        )
-        self.assertEqual(list(profile["selected_models"]), ["gpt-5.6-sol", "gpt-5.6-luna"])
-        self.assertIn("[ ] 2. GPT-5.6 Terra", second_output.getvalue())
 
-    def test_prepare_only_still_checks_for_running_clients(self) -> None:
+        self.assertEqual((home / "config.toml").read_text(encoding="utf-8"), before)
+
+    @mock.patch("codex_configure.cli.sys.platform", "linux")
+    def test_dynamic_desktop_loads_every_key_and_patched_binary(self) -> None:
         temporary, home = self.make_home()
         self.addCleanup(temporary.cleanup)
+        manager = ConfigManager(home)
+        self.save_profile(manager, "teaching", "first-secret")
+        self.save_profile(manager, "research", "second-secret")
+        binary = home / "patched-codex"
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        binary.chmod(0o700)
         launcher = FakeLauncher()
 
-        result = run_interactive(
-            codex_home=home,
-            console=Console(io.StringIO("1\n1\n"), io.StringIO()),
-            environ={},
-            prepare_only=True,
+        result = run_run(
+            home,
+            "desktop",
+            Console(io.StringIO(), io.StringIO()),
+            {"CODEX_CLI_PATH": str(binary)},
+            manager=manager,
             launcher=launcher,
         )
 
         self.assertEqual(result, 0)
-        self.assertEqual(launcher.validated, [])
-        self.assertEqual(launcher.stopped_checks, 1)
+        self.assertEqual(launcher.validated, ["desktop"])
+        self.assertEqual(
+            launcher.launches,
+            [
+                (
+                    ["fake-desktop"],
+                    {
+                        "RESEARCH_API_KEY": "second-secret",
+                        "TEACHING_API_KEY": "first-secret",
+                        "CODEX_CLI_PATH": str(binary.resolve()),
+                    },
+                )
+            ],
+        )
+        active = tomlkit.parse((home / "config.toml").read_text(encoding="utf-8"))
+        self.assertNotIn("model_provider", active)
+        self.assertNotIn("model_catalog_json", active)
+
+    def test_stock_openai_normalizes_model_saved_by_dynamic_core(self) -> None:
+        temporary, home = self.make_home()
+        self.addCleanup(temporary.cleanup)
+        manager = ConfigManager(home)
+        self.save_profile(manager, "teaching", "first-secret")
+        manager.activate_dynamic()
+
+        active = tomlkit.parse((home / "config.toml").read_text(encoding="utf-8"))
+        active["model"] = "teaching::gpt-5.6-terra"
+        (home / "config.toml").write_text(tomlkit.dumps(active), encoding="utf-8")
+        manager.activate_openai()
+
+        restored = tomlkit.parse((home / "config.toml").read_text(encoding="utf-8"))
+        self.assertNotIn("model", restored)
+
+        active = tomlkit.parse((home / "config.toml").read_text(encoding="utf-8"))
+        active["model"] = "openai::gpt-5.6-sol"
+        (home / "config.toml").write_text(tomlkit.dumps(active), encoding="utf-8")
+        manager.activate_openai()
+        restored = tomlkit.parse((home / "config.toml").read_text(encoding="utf-8"))
+        self.assertEqual(restored["model"], "gpt-5.6-sol")
+
+    def test_run_requires_initialized_provider_layout(self) -> None:
+        temporary, home = self.make_home()
+        self.addCleanup(temporary.cleanup)
+
+        with self.assertRaisesRegex(UserFacingError, "codex-configure init"):
+            run_run(
+                home,
+                "openai/cli",
+                Console(io.StringIO(), io.StringIO()),
+                {},
+                launcher=FakeLauncher(),
+            )
 
     def test_openai_restore_adopts_desktop_changes_without_losing_original(self) -> None:
         temporary, home = self.make_home()
@@ -520,14 +626,23 @@ class LauncherTests(unittest.TestCase):
                 "desktop", requires_environment=True
             )
 
+    def test_invalid_desktop_override_is_user_facing(self) -> None:
+        with self.assertRaisesRegex(UserFacingError, "Invalid CODEX_DESKTOP_COMMAND"):
+            Launcher({"CODEX_DESKTOP_COMMAND": "chatgpt\\"}).validate("desktop")
+
     @mock.patch("codex_configure.cli.subprocess.run")
-    @mock.patch("codex_configure.cli.shutil.which", return_value="/usr/bin/pgrep")
+    @mock.patch("codex_configure.cli.shutil.which")
     @mock.patch("codex_configure.cli.sys.platform", "linux")
     def test_running_clients_checks_desktop_and_cli_names(
         self, which: mock.Mock, run: mock.Mock
     ) -> None:
+        which.side_effect = lambda name, path=None: f"/usr/bin/{name}"
+
         def result(command: list[str], **kwargs: object) -> mock.Mock:
-            return mock.Mock(returncode=0 if command[-1] in {"chatgpt", "codex"} else 1)
+            if command[0] == "/usr/bin/pgrep":
+                active = command[-1] in {"chatgpt", "codex"}
+                return mock.Mock(returncode=0 if active else 1, stdout="42\n" if active else "", stderr="")
+            return mock.Mock(returncode=0, stdout="S\n", stderr="")
 
         run.side_effect = result
 
@@ -535,6 +650,21 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(launcher.running_clients(), ["chatgpt", "codex"])
         with self.assertRaisesRegex(UserFacingError, "chatgpt, codex"):
             launcher.ensure_clients_stopped()
+
+    @mock.patch("codex_configure.cli.subprocess.run")
+    @mock.patch("codex_configure.cli.shutil.which", side_effect=lambda name, path=None: f"/usr/bin/{name}")
+    @mock.patch("codex_configure.cli.sys.platform", "linux")
+    def test_running_clients_ignores_confirmed_zombies(
+        self, which: mock.Mock, run: mock.Mock
+    ) -> None:
+        def result(command: list[str], **kwargs: object) -> mock.Mock:
+            if command[0] == "/usr/bin/pgrep":
+                active = command[-1] == "ChatGPT"
+                return mock.Mock(returncode=0 if active else 1, stdout="42\n" if active else "", stderr="")
+            return mock.Mock(returncode=0, stdout="Z\n", stderr="")
+
+        run.side_effect = result
+        self.assertEqual(Launcher({"PATH": "/usr/bin"}).running_clients(), [])
 
     @mock.patch("codex_configure.cli.shutil.which", return_value=None)
     def test_missing_pgrep_blocks_switch(self, which: mock.Mock) -> None:
