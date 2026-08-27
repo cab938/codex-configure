@@ -9,7 +9,7 @@ This document records the durable design and safety boundaries for `codex-config
 - OpenAI, using the user's existing Codex authentication and upstream model catalog; and
 - U-M GPT Toolkit, using the OpenAI / Azure route and a provider-specific API key.
 
-It launches either the Codex CLI or Codex in the ChatGPT desktop app on Linux. The settled launcher does not modify the installed ChatGPT package or renderer. The qualified provider-model extension selects a pinned patched Codex backend while preserving the existing App Server wire schema; its design and packaging boundary are recorded in the [spike](spike-core-provider-model-picker.md) and [Linux productization plan](linux-provider-picker-productization.md).
+It launches either the Codex CLI or Codex in the ChatGPT desktop app on Linux. The settled launcher does not modify the installed ChatGPT package or renderer. The qualified provider-model extension selects a pinned patched Codex backend while preserving the existing App Server wire schema; its design and packaging boundary are recorded in the [spike](spike-core-provider-model-picker.md) and [Linux productionization plan](linux-provider-picker-productionization.md).
 
 The UI calls these choices **environments** because switching affects provider routing, credentials, catalog, and launch behavior, not just the default model.
 

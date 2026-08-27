@@ -90,4 +90,4 @@ The full Desktop provider-switch and restart test is intentionally a manual,
 agent-run acceptance check rather than CI. Its lightweight runner contract,
 GUI sequence, safety boundaries, and evidence requirements are documented in
 [Manual VM acceptance](../../docs/manual-vm-acceptance.md). Linux packaging
-work is tracked in the [provider-picker productization plan](../../docs/linux-provider-picker-productization.md).
+work is tracked in the [provider-picker productionization plan](../../docs/linux-provider-picker-productionization.md).

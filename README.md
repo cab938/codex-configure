@@ -213,7 +213,7 @@ Use this only for a VM that fails during normal desktop launch. For Wayland-spec
 
 - [Architecture and safety model](docs/architecture.md)
 - [Experimental Core provider-model picker spike](docs/spike-core-provider-model-picker.md)
-- [Linux provider-picker productization plan](docs/linux-provider-picker-productization.md)
+- [Linux provider-picker productionization plan](docs/linux-provider-picker-productionization.md)
 - [Manual VM acceptance design](docs/manual-vm-acceptance.md)
 
 ## Current limits
