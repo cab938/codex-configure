@@ -245,6 +245,7 @@ Use this only for a VM that fails during normal desktop launch. For Wayland-spec
 ## Project documentation
 
 - [Architecture and safety model](docs/architecture.md)
+- [Experimental Core provider-model picker spike](docs/spike-core-provider-model-picker.md)
 
 ## Current limits
 
