@@ -1,8 +1,8 @@
 diff --git a/codex-rs/app-server/src/models.rs b/codex-rs/app-server/src/models.rs
-index 1063e64c339ab97d9717e5923a2c209e4899e038..0402c377b89ee34b8def11231764f68b61fabb72 100644
+index 1063e64c339ab97d9717e5923a2c209e4899e038..6ed5bb5a978356af140ae5e9e74b60a95ee0d66b 100644
 --- a/codex-rs/app-server/src/models.rs
 +++ b/codex-rs/app-server/src/models.rs
-@@ -5,32 +5,100 @@ use codex_app_server_protocol::ModelServiceTier;
+@@ -5,32 +5,101 @@ use codex_app_server_protocol::ModelServiceTier;
  use codex_app_server_protocol::ModelUpgradeInfo;
  use codex_app_server_protocol::ReasoningEffortOption;
  use codex_core::ThreadManager;
@@ -99,6 +99,7 @@ index 1063e64c339ab97d9717e5923a2c209e4899e038..0402c377b89ee34b8def11231764f68b
 +fn model_from_preset(preset: ModelPreset, provider_id: &str) -> Model {
 +    let qualified_id = qualify_model(provider_id, &preset.id);
 +    let qualified_model = qualify_model(provider_id, &preset.model);
++    let qualified_display_name = qualified_model.clone();
      Model {
 -        id: preset.id.to_string(),
 -        model: preset.model.to_string(),
@@ -115,6 +116,15 @@ index 1063e64c339ab97d9717e5923a2c209e4899e038..0402c377b89ee34b8def11231764f68b
              upgrade_copy: upgrade.upgrade_copy.clone(),
              model_link: upgrade.model_link.clone(),
              migration_markdown: upgrade.migration_markdown.clone(),
+@@ -40,7 +109,7 @@ fn model_from_preset(preset: ModelPreset) -> Model {
+                 .map(chrono::DateTime::timestamp),
+         }),
+         availability_nux: preset.availability_nux.map(Into::into),
+-        display_name: preset.display_name.to_string(),
++        display_name: qualified_display_name,
+         description: preset.description.to_string(),
+         model_specialty: preset.model_specialty,
+         hidden: !preset.show_in_picker,
 diff --git a/codex-rs/app-server/src/request_processors/catalog_processor.rs b/codex-rs/app-server/src/request_processors/catalog_processor.rs
 index 9c7bd4e80690050bc9578cb37f340fb6c92420e0..de4e0589600f48591ab82e4e18151c74bc83a055 100644
 --- a/codex-rs/app-server/src/request_processors/catalog_processor.rs
@@ -508,7 +518,7 @@ index ffba9ba44f13e4f4045b5ced0f4af70838712614..8befeff7d695508af41df405a3b7fef1
      fn merge_persisted_resume_metadata_preserves_explicit_overrides() -> Result<()> {
          let mut request_overrides = Some(HashMap::from([(
 diff --git a/codex-rs/app-server/tests/suite/v2/model_list.rs b/codex-rs/app-server/tests/suite/v2/model_list.rs
-index 7e21fb6d8e2967fce1f1f34bbdaaa6ab0b53b9e3..e3ae59f2263f83b0eec82142a8727eb6c0399d11 100644
+index 7e21fb6d8e2967fce1f1f34bbdaaa6ab0b53b9e3..dc1e3ebffec06367829fcecc2cfc2f02586af01a 100644
 --- a/codex-rs/app-server/tests/suite/v2/model_list.rs
 +++ b/codex-rs/app-server/tests/suite/v2/model_list.rs
 @@ -31,12 +31,13 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -529,7 +539,16 @@ index 7e21fb6d8e2967fce1f1f34bbdaaa6ab0b53b9e3..e3ae59f2263f83b0eec82142a8727eb6
              upgrade_copy: upgrade.upgrade_copy.clone(),
              model_link: upgrade.model_link.clone(),
              migration_markdown: upgrade.migration_markdown.clone(),
-@@ -329,6 +330,112 @@ async fn list_models_pagination_works() -> Result<()> {
+@@ -46,7 +47,7 @@ fn model_from_preset(preset: &ModelPreset) -> Model {
+                 .map(chrono::DateTime::timestamp),
+         }),
+         availability_nux: preset.availability_nux.clone().map(Into::into),
+-        display_name: preset.display_name.clone(),
++        display_name: qualify(&preset.model),
+         description: preset.description.clone(),
+         model_specialty: preset.model_specialty.clone(),
+         hidden: !preset.show_in_picker,
+@@ -329,6 +330,113 @@ async fn list_models_pagination_works() -> Result<()> {
      );
  }
  
@@ -624,6 +643,7 @@ index 7e21fb6d8e2967fce1f1f34bbdaaa6ab0b53b9e3..e3ae59f2263f83b0eec82142a8727eb6
 +        .iter()
 +        .find(|item| item.id == "umich-toolkit::um-model")
 +        .expect("U-M Toolkit model should be listed");
++    assert_eq!(toolkit.display_name, "umich-toolkit::um-model");
 +    assert_eq!(
 +        toolkit.upgrade.as_deref(),
 +        Some("umich-toolkit::um-upgrade")

@@ -4,7 +4,7 @@ This branch tests whether stock Codex clients can use one model picker for more 
 
 The proof of concept is pinned to OpenAI Codex commit `b68acc4d4b56fdfa1d5b6a2c36102c66876e0c46`. The branch will retain a patch and build harness rather than vendoring the upstream repository.
 
-The current artifact validates the CLI and App Server boundary. Codex Desktop still launches its bundled Core executable, so presenting this catalog in the stock Desktop app requires a later packaging or binary-handoff decision. The interaction below is the intended Desktop experience once that handoff exists.
+The current artifact validates the CLI, App Server, and stock Linux Desktop boundary. Codex Desktop 26.820.60940 honored `CODEX_CLI_PATH`, launched the patched Core executable, accepted its `0.0.0` development version, and rendered its catalog without a Desktop renderer patch. `CODEX_CLI_PATH` is still an experimental packaging hook rather than a documented compatibility promise, so sharing the binary remains a later decision.
 
 ## Intended interaction
 
@@ -74,7 +74,7 @@ Switching provider must not reuse another provider's WebSocket, sticky-routing t
 
 ## Catalog behavior
 
-`model/list` will aggregate OpenAI and `umich-toolkit` for this proof of concept. Returned `id`, `model`, and upgrade references are qualified so the existing picker sends an unambiguous value back to Core. The U-M catalog is still discovery, not an entitlement promise.
+`model/list` aggregates OpenAI and `umich-toolkit` for this proof of concept. Returned `id`, `model`, `displayName`, and upgrade references are qualified so the existing picker both displays and sends an unambiguous value. Qualifying only `id` and `model` produces visually indistinguishable duplicate labels because stock Desktop renders `displayName`. The U-M catalog is still discovery, not an entitlement promise.
 
 The first spike deliberately names the two provider IDs instead of inventing a durable provider-discovery policy. A later design can add explicit picker visibility configuration when vLLM packaging is in scope.
 
@@ -101,7 +101,13 @@ The proof of concept is useful when all of the following are observed:
 - A single task ID and history survive an OpenAI-to-U-M provider change between turns.
 - A failed or unknown provider selection leaves the previous provider-model selection usable.
 - Restarting the App Server and resuming the task restores the last committed qualified selection.
-- All build and live-test state is under the isolated VM spike directory and a dedicated `CODEX_HOME`; the VM user's normal Codex home and the stale test checkout are not modified.
+- All patched Core build and live-test state is under the isolated VM spike directory and a dedicated `CODEX_HOME`; the VM user's normal Codex home and the stale test checkout are not modified.
+
+### Isolated VM observation, 2026-08-27
+
+The Linux acceptance run used `/home/codex/projects/codex-provider-model-picker-spike` and its dedicated `codex-home`; the authenticated stock Desktop shell reused the VM account's existing `/home/codex/.config/Codex` app profile. Desktop spawned `/home/codex/projects/codex-provider-model-picker-spike/bin/codex` through `CODEX_CLI_PATH`; the App Server handshake and `model/list` completed successfully. The real picker displayed distinct `openai::...` and `umich-toolkit::...` entries. Selecting `umich-toolkit::gpt-5.6-terra` created a persisted rollout whose session metadata recorded `model_provider: "umich-toolkit"` and whose exact response was `DESKTOP_UMICH_OK`.
+
+The VM's existing ChatGPT Desktop session then encountered a 401 token-refresh failure and returned to sign-in, while the isolated Core still reported `Logged in using ChatGPT`. A subsequent qualified OpenAI CLI turn through the same binary and `CODEX_HOME` returned `DESKTOP_SPIKE_OPENAI_OK`, supporting a Desktop app-session failure rather than a Core provider-auth failure. The expired Desktop session prevented a same-Desktop-session OpenAI-to-U-M-to-OpenAI UI continuity check. The App Server canary had already demonstrated an OpenAI-to-U-M switch within one task and restart/resume restoration. Repeating the visual continuity check after Desktop reauthentication remains useful acceptance work, not a demonstrated routing defect.
 
 ## Non-goals
 
