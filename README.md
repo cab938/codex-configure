@@ -18,42 +18,9 @@ You need all of the following:
 - Python 3.11 or newer; and
 - Git, to download and update this project.
 
-This project currently supports:
-
-- macOS on Apple silicon, using the current ChatGPT macOS app; and
-- the Linux distributions supported by the current ChatGPT Linux preview: Ubuntu 24.04 or 26.04, Debian 13, and Fedora 43 or 44, on x64 or ARM64.
+This project currently targets the Linux distributions supported by the ChatGPT Linux preview: Ubuntu 24.04 or 26.04, Debian 13, and Fedora 43 or 44, on x64 or ARM64.
 
 Do not share a U-M key or commit it to this repository. Each person should use their own key.
-
-## macOS setup
-
-### 1. Install and sign in to Codex
-
-Install the [Codex CLI](https://learn.chatgpt.com/docs/codex/cli):
-
-```bash
-curl -fsSL https://chatgpt.com/codex/install.sh | sh
-```
-
-Open a new Terminal window, run `codex`, and choose **Sign in with ChatGPT** on the first run.
-
-Download and install the [ChatGPT desktop app for macOS](https://learn.chatgpt.com/docs/app), move it to `/Applications`, and sign in with the same OpenAI account.
-
-### 2. Check Python and Git
-
-```bash
-python3 --version
-git --version
-```
-
-Python must report 3.11 or newer. If either command is missing:
-
-- install Python from [python.org](https://www.python.org/downloads/macos/); and
-- install Apple's command-line tools for Git with `xcode-select --install`.
-
-If you already use Homebrew, `brew install python git` is also sufficient.
-
-Continue with [Install codex-configure](#install-codex-configure).
 
 ## Linux setup
 
@@ -210,7 +177,7 @@ Your key, profiles, and backups are stored under `CODEX_HOME`, not in the cloned
 
 ### "Codex or ChatGPT is running"
 
-Quit the ChatGPT app completely, not just its window, and exit all Codex terminals. On macOS use **ChatGPT > Quit ChatGPT** or Command-Q. Then run the launcher again.
+Quit the ChatGPT app completely, not just its window, and exit all Codex terminals. Then run the launcher again.
 
 ### "Could not find the Codex CLI on PATH"
 
@@ -223,7 +190,7 @@ codex --version
 
 ### "Could not find Codex Desktop"
 
-On macOS, keep `ChatGPT.app` in `/Applications` or `~/Applications`. On Linux, install the official package so the `chatgpt` command is available. For a nonstandard installation, set `CODEX_DESKTOP_COMMAND` to the actual executable before running the launcher.
+Install the official Linux package so the `chatgpt` command is available. For a nonstandard installation, set `CODEX_DESKTOP_COMMAND` to the actual executable before running the launcher.
 
 ### U-M credential permission error
 
@@ -246,10 +213,13 @@ Use this only for a VM that fails during normal desktop launch. For Wayland-spec
 
 - [Architecture and safety model](docs/architecture.md)
 - [Experimental Core provider-model picker spike](docs/spike-core-provider-model-picker.md)
+- [Linux provider-picker productization plan](docs/linux-provider-picker-productization.md)
+- [Manual VM acceptance design](docs/manual-vm-acceptance.md)
 
 ## Current limits
 
 - Only OpenAI and the U-M GPT Toolkit OpenAI / Azure route are exposed.
+- The first supported packaging target is Linux.
 - U-M's advertised catalog is not proof that every listed model is enabled for every key. Terra is marked `verified`; other discovered models are marked `listed` until they have a recorded canary.
-- Only one environment can be active in a given `CODEX_HOME` at a time.
+- Only one materialized configuration can be active in a given `CODEX_HOME` at a time. The qualified provider-picker build can expose both configured providers within that configuration.
 - Managed Codex settings supplied by an organization can override the user configuration and are not changed by this tool.

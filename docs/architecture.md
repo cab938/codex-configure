@@ -4,18 +4,18 @@ This document records the durable design and safety boundaries for `codex-config
 
 ## Scope
 
-`codex-configure` is an external launcher for stock Codex clients. It supports two environments in one shared `CODEX_HOME`:
+`codex-configure` is an external launcher for Codex clients. It supports two environments in one shared `CODEX_HOME`:
 
 - OpenAI, using the user's existing Codex authentication and upstream model catalog; and
 - U-M GPT Toolkit, using the OpenAI / Azure route and a provider-specific API key.
 
-It launches either the Codex CLI or Codex in the ChatGPT desktop app on macOS and Linux. It does not patch either client, replace the Codex App Server, or operate more than one active environment concurrently.
+It launches either the Codex CLI or Codex in the ChatGPT desktop app on Linux. The settled launcher does not modify the installed ChatGPT package or renderer. The qualified provider-model extension selects a pinned patched Codex backend while preserving the existing App Server wire schema; its design and packaging boundary are recorded in the [spike](spike-core-provider-model-picker.md) and [Linux productization plan](linux-provider-picker-productization.md).
 
 The UI calls these choices **environments** because switching affects provider routing, credentials, catalog, and launch behavior, not just the default model.
 
 ## System boundary
 
-Codex keeps user state under `CODEX_HOME`, normally `~/.codex`. The CLI supports named profile overlays, but stock Desktop has no corresponding user-facing environment selector. The compatibility surface shared by both clients is therefore the materialized active configuration at `$CODEX_HOME/config.toml`.
+Codex keeps user state under `CODEX_HOME`, normally `~/.codex`. The materialized active configuration at `$CODEX_HOME/config.toml` remains the shared credential, provider-definition, and recovery boundary. The qualified provider-model backend additionally supplies both configured providers through the existing model-list and string-valued model-selection APIs.
 
 The launcher owns only the model-routing fields it installs:
 
@@ -77,7 +77,7 @@ The resulting selection is written as an immutable content-addressed catalog. Ca
 
 The launcher verifies that all known Codex CLI and ChatGPT/Desktop processes are stopped before switching. It then starts the selected client with the activated configuration.
 
-On macOS it prefers the executable inside `/Applications/ChatGPT.app` or `~/Applications/ChatGPT.app`; direct execution is required to pass the U-M environment reliably. On Linux it normally resolves `chatgpt` from `PATH`. `CODEX_DESKTOP_COMMAND` is an explicit override for nonstandard installations or VM flags.
+On Linux it normally resolves `chatgpt` from `PATH`. `CODEX_DESKTOP_COMMAND` is an explicit override for nonstandard installations or VM flags. The provider-picker build is executed directly for CLI launches and supplied to the Linux Desktop child through `CODEX_CLI_PATH`; that variable is scoped to the child process rather than installed globally.
 
 ## Runtime layout
 
@@ -163,13 +163,13 @@ If execution stops between the live-file writes, the next invocation restores th
 
 ## Shared state behavior
 
-Tasks, history, skills, plugins, MCP configuration, memories, trust settings, and other non-routing state remain shared because both environments use one `CODEX_HOME`.
+Tasks, history, skills, plugins, MCP configuration, memories, trust settings, and other non-routing state remain shared because both providers use one `CODEX_HOME`.
 
-A task is not pinned to the provider that created it. When a task is resumed, the currently active environment controls the next turn. This was exercised in the CLI by creating a task under OpenAI/Sol, switching to U-M/Terra, and resuming successfully through U-M. Users therefore select the intended environment before resuming a task.
+With the qualified provider-model backend, the selected provider and model are committed to the task between turns and restored on resume. A user can change providers through the existing model picker without changing the execution host or forking the task. Provider-bound reasoning is removed at a provider boundary, while user messages, assistant messages, and tool history remain available.
 
 ## Durable decisions
 
-- Remain an external launcher for stock clients.
+- Remain an external launcher; do not modify the installed ChatGPT package or renderer.
 - Support both CLI and Desktop through one interaction.
 - Preserve one shared `CODEX_HOME` and materialize one active configuration.
 - Keep OpenAI authentication untouched.
@@ -180,12 +180,13 @@ A task is not pinned to the provider that created it. When a task is resumed, th
 - Treat activation as a recoverable transaction.
 - Preserve unrelated user configuration and refuse ambiguous routing overwrites.
 - Detect managed configuration conflicts without trying to override policy.
+- Make Linux the first supported packaging and documentation target.
 
 ## Non-goals and current constraints
 
 - AWS Bedrock, Google, local providers, and Portkey administration are outside the current interface.
 - Concurrent environments in one `CODEX_HOME` are not supported.
-- The launcher does not manage all Codex settings or patch native model-picker behavior.
+- The launcher does not manage all Codex settings or patch the Desktop renderer's model-picker behavior.
 - It does not guarantee that every advertised U-M model is callable by every key.
 - It does not distribute or change administrator-managed Codex policy.
-- Linux has been exercised in the project VM. macOS launch behavior is covered by focused tests but still requires acceptance testing on a real Mac before a broad release.
+- Packaging and documentation for other operating systems are outside the first release scope.

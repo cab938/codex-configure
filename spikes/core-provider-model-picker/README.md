@@ -83,3 +83,11 @@ python3 -m py_compile spikes/core-provider-model-picker/app_server_canary.py
 These checks cover JSONL framing, qualified catalog selection, exact marker
 parsing, and task/turn identity continuity. They do not replace the live
 catalog-only and two-turn canaries.
+
+## Manual Linux Desktop acceptance
+
+The full Desktop provider-switch and restart test is intentionally a manual,
+agent-run acceptance check rather than CI. Its lightweight runner contract,
+GUI sequence, safety boundaries, and evidence requirements are documented in
+[Manual VM acceptance](../../docs/manual-vm-acceptance.md). Linux packaging
+work is tracked in the [provider-picker productization plan](../../docs/linux-provider-picker-productization.md).
