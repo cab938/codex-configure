@@ -72,6 +72,12 @@ Each resolved provider runtime owns:
 
 Switching provider must not reuse another provider's WebSocket, sticky-routing token, HTTP fallback state, or model-catalog cache.
 
+### Cross-provider history boundary
+
+Provider reasoning items are not portable history. They may contain opaque or encrypted state that only the provider that created them can verify. When a committed provider change occurs between live turns, Core therefore removes all reasoning items from the in-memory history before the new provider is used. User messages, assistant messages, and tool interactions remain available, so the semantic conversation continues without forwarding another provider's private reasoning payload.
+
+Resume performs the same filtering while reconstructing a rollout. It begins with the provider recorded in session metadata and replays persisted `ThreadSettingsApplied` provider boundaries. Each provider boundary discards reasoning created under the previous provider while preserving reasoning created under the final active provider. Same-provider model changes retain their existing history behavior.
+
 ## Catalog behavior
 
 `model/list` aggregates OpenAI and `umich-toolkit` for this proof of concept. Returned `id`, `model`, `displayName`, and upgrade references are qualified so the existing picker both displays and sends an unambiguous value. Qualifying only `id` and `model` produces visually indistinguishable duplicate labels because stock Desktop renders `displayName`. The U-M catalog is still discovery, not an entitlement promise.
@@ -84,12 +90,13 @@ The first spike deliberately names the two provider IDs instead of inventing a d
 2. Resolve a qualified startup model to its provider while preserving unqualified backward compatibility.
 3. Give each committed task selection a provider-specific models manager and make model metadata lookup strip the namespace before calling the provider.
 4. Select a provider-matched model client at turn start, with provider-private connection state reset on a provider change.
-5. Persist the resolved provider ID with thread settings and restore it on resume.
-6. Aggregate and qualify the OpenAI and U-M entries returned by `model/list` without changing the App Server wire schema.
-7. Keep a reproducible patch and scripts in `spikes/core-provider-model-picker/`, pinned to the upstream commit above.
-8. Run focused parser, configuration, Core session, and App Server catalog tests.
-9. Build the patched `codex` binary on a Linux host, strip only the test artifact, and copy it to the limited-disk project VM under the dedicated spike directory.
-10. Run App Server canaries with a separate VM `CODEX_HOME` that demonstrate catalog listing, an OpenAI turn, a U-M turn, an OpenAI-to-U-M switch in one task, and restart/resume restoration. No canary prints or records the U-M key.
+5. Remove provider-bound reasoning at committed provider changes and reconstruct the same boundary from persisted settings events on resume.
+6. Persist the resolved provider ID with thread settings and restore it on resume.
+7. Aggregate and qualify the OpenAI and U-M entries returned by `model/list` without changing the App Server wire schema.
+8. Keep a reproducible patch and scripts in `spikes/core-provider-model-picker/`, pinned to the upstream commit above.
+9. Run focused parser, configuration, Core session, history-reconstruction, and App Server catalog tests.
+10. Build the patched `codex` binary on a Linux host, strip only the test artifact, and copy it to the limited-disk project VM under the dedicated spike directory.
+11. Run App Server and Desktop canaries with a separate VM `CODEX_HOME` that demonstrate catalog listing, OpenAI and U-M turns, an OpenAI-to-U-M-to-OpenAI sequence in one task, and restart/resume restoration. No canary prints or records the U-M key.
 
 ## Acceptance evidence
 
@@ -98,7 +105,8 @@ The proof of concept is useful when all of the following are observed:
 - `model/list` returns at least one qualified OpenAI entry and `umich-toolkit::gpt-5.6-terra`.
 - A qualified OpenAI selection sends the unqualified OpenAI model to the OpenAI route.
 - A qualified U-M selection sends `gpt-5.6-terra` to the U-M Responses endpoint with the configured Portkey header.
-- A single task ID and history survive an OpenAI-to-U-M provider change between turns.
+- A single task ID and semantic history survive an OpenAI-to-U-M-to-OpenAI provider sequence between turns.
+- Provider-bound reasoning is removed at a provider boundary rather than sent to a provider that cannot verify it.
 - A failed or unknown provider selection leaves the previous provider-model selection usable.
 - Restarting the App Server and resuming the task restores the last committed qualified selection.
 - All patched Core build and live-test state is under the isolated VM spike directory and a dedicated `CODEX_HOME`; the VM user's normal Codex home and the stale test checkout are not modified.
@@ -107,7 +115,13 @@ The proof of concept is useful when all of the following are observed:
 
 The Linux acceptance run used `/home/codex/projects/codex-provider-model-picker-spike` and its dedicated `codex-home`; the authenticated stock Desktop shell reused the VM account's existing `/home/codex/.config/Codex` app profile. Desktop spawned `/home/codex/projects/codex-provider-model-picker-spike/bin/codex` through `CODEX_CLI_PATH`; the App Server handshake and `model/list` completed successfully. The real picker displayed distinct `openai::...` and `umich-toolkit::...` entries. Selecting `umich-toolkit::gpt-5.6-terra` created a persisted rollout whose session metadata recorded `model_provider: "umich-toolkit"` and whose exact response was `DESKTOP_UMICH_OK`.
 
-The VM's existing ChatGPT Desktop session then encountered a 401 token-refresh failure and returned to sign-in, while the isolated Core still reported `Logged in using ChatGPT`. A subsequent qualified OpenAI CLI turn through the same binary and `CODEX_HOME` returned `DESKTOP_SPIKE_OPENAI_OK`, supporting a Desktop app-session failure rather than a Core provider-auth failure. The expired Desktop session prevented a same-Desktop-session OpenAI-to-U-M-to-OpenAI UI continuity check. The App Server canary had already demonstrated an OpenAI-to-U-M switch within one task and restart/resume restoration. Repeating the visual continuity check after Desktop reauthentication remains useful acceptance work, not a demonstrated routing defect.
+A controlled follow-up compared the bundled Core with the patched Core from the same signed-in Desktop starting profile. The bundled `0.150.0-alpha.8` Core completed `DESKTOP_STOCK_OK`, then Desktop received a 401 from `GET /backend-api/accounts/{account_id}/settings` with the response `Must use workspace account for this operation`. Desktop remained signed in. The patched `0.0.0` Core completed `PATCHED_OPENAI_OK` and produced the same account-settings 401 before any U-M model was selected. It also remained signed in, switched the same task to `umich-toolkit::gpt-5.6-terra`, and completed `PATCHED_UMICH_OK`. Neither run logged `account/updated` or `App server account changed`, and the isolated Core still reported `Logged in using ChatGPT` afterward.
+
+This A/B falsifies a patch-specific or binary-attestation explanation for the observed 401. The failure is a Desktop account/workspace settings request, independent of `CODEX_CLI_PATH` and independent of U-M routing. The earlier return-to-sign-in was therefore a separate Desktop session-state event whose exact trigger remains unproven.
+
+The first full visual OpenAI-to-U-M-to-OpenAI run exposed a separate Core history defect: the return OpenAI turn received a U-M reasoning item whose encrypted content OpenAI could not verify. That failure occurred after the reverse picker selection and `thread/settings/update` had both succeeded. Core now removes provider-bound reasoning at live provider changes and reconstructs persisted provider boundaries on resume, while retaining the semantic transcript.
+
+The rebuilt acceptance run used a fresh isolated Desktop profile clone under `e2e-test-fixed` and task `01a043db-c04d-7bf1-a267-e9d0a3ce8435`. OpenAI stored `OPENAI-FIXED-5C4A9E`; after selection of `umich-toolkit::gpt-5.6-terra`, U-M recalled it and generated `UMICH-7KQ9XZ`; after selecting `openai::gpt-5.6-sol`, OpenAI returned the U-M token exactly. Desktop was then quit normally, relaunched with the same isolated Core and Desktop homes, and resumed the same task on the OpenAI-qualified model. The resumed turn returned `OPENAI-FIXED-5C4A9E|UMICH-7KQ9XZ` exactly. Screenshots and Desktop logs are retained under `/home/codex/projects/codex-provider-model-picker-spike/e2e-test-fixed`; the persisted rollout is in its dedicated `codex-home`. The account-settings 401 remained nonfatal and independent of provider routing.
 
 ## Non-goals
 

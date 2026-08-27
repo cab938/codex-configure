@@ -1,5 +1,5 @@
 diff --git a/codex-rs/app-server/src/models.rs b/codex-rs/app-server/src/models.rs
-index 1063e64c339ab97d9717e5923a2c209e4899e038..6ed5bb5a978356af140ae5e9e74b60a95ee0d66b 100644
+index 1063e64..6ed5bb5 100644
 --- a/codex-rs/app-server/src/models.rs
 +++ b/codex-rs/app-server/src/models.rs
 @@ -5,32 +5,101 @@ use codex_app_server_protocol::ModelServiceTier;
@@ -126,7 +126,7 @@ index 1063e64c339ab97d9717e5923a2c209e4899e038..6ed5bb5a978356af140ae5e9e74b60a9
          model_specialty: preset.model_specialty,
          hidden: !preset.show_in_picker,
 diff --git a/codex-rs/app-server/src/request_processors/catalog_processor.rs b/codex-rs/app-server/src/request_processors/catalog_processor.rs
-index 9c7bd4e80690050bc9578cb37f340fb6c92420e0..de4e0589600f48591ab82e4e18151c74bc83a055 100644
+index 9c7bd4e..de4e058 100644
 --- a/codex-rs/app-server/src/request_processors/catalog_processor.rs
 +++ b/codex-rs/app-server/src/request_processors/catalog_processor.rs
 @@ -173,6 +173,7 @@ impl CatalogRequestProcessor {
@@ -154,7 +154,7 @@ index 9c7bd4e80690050bc9578cb37f340fb6c92420e0..de4e0589600f48591ab82e4e18151c74
          .await;
          let total = models.len();
 diff --git a/codex-rs/app-server/src/request_processors/persisted_resume_settings.rs b/codex-rs/app-server/src/request_processors/persisted_resume_settings.rs
-index 5e408b02c94341c9e6de2a71ca282eeb0b2cdc7e..95379b0ffec56aaf95f0c3697a3f9a1efcee5a68 100644
+index 5e408b0..95379b0 100644
 --- a/codex-rs/app-server/src/request_processors/persisted_resume_settings.rs
 +++ b/codex-rs/app-server/src/request_processors/persisted_resume_settings.rs
 @@ -6,6 +6,8 @@ use codex_rollout::RolloutItem;
@@ -237,7 +237,7 @@ index 5e408b02c94341c9e6de2a71ca282eeb0b2cdc7e..95379b0ffec56aaf95f0c3697a3f9a1e
  #[path = "persisted_resume_settings_tests.rs"]
  mod tests;
 diff --git a/codex-rs/app-server/src/request_processors/persisted_resume_settings_tests.rs b/codex-rs/app-server/src/request_processors/persisted_resume_settings_tests.rs
-index 98ab3f59a221c8f9ef17acb13aa75a550c63599e..acf53a4e21fec2660155d526927bc27c6d36c5a5 100644
+index 98ab3f5..acf53a4 100644
 --- a/codex-rs/app-server/src/request_processors/persisted_resume_settings_tests.rs
 +++ b/codex-rs/app-server/src/request_processors/persisted_resume_settings_tests.rs
 @@ -25,12 +25,28 @@ fn settings_item(
@@ -394,7 +394,7 @@ index 98ab3f59a221c8f9ef17acb13aa75a550c63599e..acf53a4e21fec2660155d526927bc27c
              approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
              active_permission_profile: None,
 diff --git a/codex-rs/app-server/src/request_processors/thread_processor.rs b/codex-rs/app-server/src/request_processors/thread_processor.rs
-index 0803fb1445ef0dad635a8199623657125a84d355..1ebc8bb19b2a423c83227df0611cb011514c7046 100644
+index 0803fb1..1ebc8bb 100644
 --- a/codex-rs/app-server/src/request_processors/thread_processor.rs
 +++ b/codex-rs/app-server/src/request_processors/thread_processor.rs
 @@ -232,6 +232,24 @@ fn merge_persisted_resume_metadata(
@@ -470,7 +470,7 @@ index 0803fb1445ef0dad635a8199623657125a84d355..1ebc8bb19b2a423c83227df0611cb011
                  typesafe_overrides.approval_policy = Some(persisted_settings.approval_policy);
              }
 diff --git a/codex-rs/app-server/src/request_processors/thread_processor_tests.rs b/codex-rs/app-server/src/request_processors/thread_processor_tests.rs
-index ffba9ba44f13e4f4045b5ced0f4af70838712614..8befeff7d695508af41df405a3b7fef17c4c8fa0 100644
+index ffba9ba..8befeff 100644
 --- a/codex-rs/app-server/src/request_processors/thread_processor_tests.rs
 +++ b/codex-rs/app-server/src/request_processors/thread_processor_tests.rs
 @@ -779,6 +779,43 @@ mod thread_processor_behavior_tests {
@@ -518,7 +518,7 @@ index ffba9ba44f13e4f4045b5ced0f4af70838712614..8befeff7d695508af41df405a3b7fef1
      fn merge_persisted_resume_metadata_preserves_explicit_overrides() -> Result<()> {
          let mut request_overrides = Some(HashMap::from([(
 diff --git a/codex-rs/app-server/tests/suite/v2/model_list.rs b/codex-rs/app-server/tests/suite/v2/model_list.rs
-index 7e21fb6d8e2967fce1f1f34bbdaaa6ab0b53b9e3..dc1e3ebffec06367829fcecc2cfc2f02586af01a 100644
+index 7e21fb6..dc1e3eb 100644
 --- a/codex-rs/app-server/tests/suite/v2/model_list.rs
 +++ b/codex-rs/app-server/tests/suite/v2/model_list.rs
 @@ -31,12 +31,13 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -663,7 +663,7 @@ index 7e21fb6d8e2967fce1f1f34bbdaaa6ab0b53b9e3..dc1e3ebffec06367829fcecc2cfc2f02
  async fn list_models_rejects_invalid_cursor() -> Result<()> {
      let codex_home = TempDir::new()?;
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index 19f3c4ec21c75f6d8a44c18f2d0b4bb96920e826..324e29cd950fd67551736e4e857123234702b153 100644
+index 19f3c4e..324e29c 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
 @@ -528,6 +528,56 @@ impl ModelClient {
@@ -735,7 +735,7 @@ index 19f3c4ec21c75f6d8a44c18f2d0b4bb96920e826..324e29cd950fd67551736e4e85712323
          Arc::clone(&self.turn_state)
      }
 diff --git a/codex-rs/core/src/client_tests.rs b/codex-rs/core/src/client_tests.rs
-index f6862577723c0e73c047080d367b6a2c04c8124a..19d776083e57a869d3aeb108514ed7bfc0941cae 100644
+index f686257..19d7760 100644
 --- a/codex-rs/core/src/client_tests.rs
 +++ b/codex-rs/core/src/client_tests.rs
 @@ -1191,3 +1191,21 @@ async fn non_chatgpt_codex_endpoints_omit_attestation_generation() {
@@ -761,7 +761,7 @@ index f6862577723c0e73c047080d367b6a2c04c8124a..19d776083e57a869d3aeb108514ed7bf
 +    assert!(!Arc::ptr_eq(&session.client.state, &client.state));
 +}
 diff --git a/codex-rs/core/src/codex_delegate.rs b/codex-rs/core/src/codex_delegate.rs
-index 0a74f925e1f2ebd3eea37f7af38913dcd79ccf63..5fdf111ff78632a990941ec1dea8ab54e39ad8cf 100644
+index 0a74f92..5fdf111 100644
 --- a/codex-rs/core/src/codex_delegate.rs
 +++ b/codex-rs/core/src/codex_delegate.rs
 @@ -118,6 +118,7 @@ pub(crate) async fn run_codex_thread_interactive(
@@ -773,7 +773,7 @@ index 0a74f925e1f2ebd3eea37f7af38913dcd79ccf63..5fdf111ff78632a990941ec1dea8ab54
              .services
              .turn_environments
 diff --git a/codex-rs/core/src/compact.rs b/codex-rs/core/src/compact.rs
-index 3ddbea44633ab34a152bd22ce9622b34afc6e3ca..1525bb3979aa58213b06de4403863e6d9fb9d08f 100644
+index 3ddbea4..1525bb3 100644
 --- a/codex-rs/core/src/compact.rs
 +++ b/codex-rs/core/src/compact.rs
 @@ -262,7 +262,10 @@ async fn run_compact_task_inner_impl(
@@ -789,7 +789,7 @@ index 3ddbea44633ab34a152bd22ce9622b34afc6e3ca..1525bb3979aa58213b06de4403863e6d
      // request tracking)
      // survives retries within this compact turn.
 diff --git a/codex-rs/core/src/compact_remote_v2_attempt.rs b/codex-rs/core/src/compact_remote_v2_attempt.rs
-index 9569649f8b47420f8cc9fb2704ce271a5047161e..b9d9567113784663b428d1d3942ae6c884ad5d22 100644
+index 9569649..b9d9567 100644
 --- a/codex-rs/core/src/compact_remote_v2_attempt.rs
 +++ b/codex-rs/core/src/compact_remote_v2_attempt.rs
 @@ -100,7 +100,11 @@ pub(super) async fn run_remote_compact_v2_attempt(
@@ -806,7 +806,7 @@ index 9569649f8b47420f8cc9fb2704ce271a5047161e..b9d9567113784663b428d1d3942ae6c8
      let compaction_output_result = run_remote_compaction_request_v2(
          sess,
 diff --git a/codex-rs/core/src/config/config_tests.rs b/codex-rs/core/src/config/config_tests.rs
-index 4cc4bc7e907d25860c2a14d19d36b3349c2916d9..1c1d9541d80979041f374a95eb6e479a78dd1941 100644
+index 4cc4bc7..1c1d954 100644
 --- a/codex-rs/core/src/config/config_tests.rs
 +++ b/codex-rs/core/src/config/config_tests.rs
 @@ -950,6 +950,149 @@ profile = "codex-bedrock"
@@ -960,7 +960,7 @@ index 4cc4bc7e907d25860c2a14d19d36b3349c2916d9..1c1d9541d80979041f374a95eb6e479a
  async fn managed_residency_warns_about_provider_header_overrides_without_mutating_config()
  -> std::io::Result<()> {
 diff --git a/codex-rs/core/src/config/mod.rs b/codex-rs/core/src/config/mod.rs
-index 9c1b419903aa3022feac376e830b2a27e1b9c2d0..bc1fd9688627ea709309aaece622cf5b7f8fc596 100644
+index 9c1b419..bc1fd96 100644
 --- a/codex-rs/core/src/config/mod.rs
 +++ b/codex-rs/core/src/config/mod.rs
 @@ -92,6 +92,7 @@ use codex_model_provider_info::ModelProviderInfo;
@@ -1017,8 +1017,64 @@ index 9c1b419903aa3022feac376e830b2a27e1b9c2d0..bc1fd9688627ea709309aaece622cf5b
          let model_provider = model_providers
              .get(&model_provider_id)
              .ok_or_else(|| {
+diff --git a/codex-rs/core/src/context_manager/history.rs b/codex-rs/core/src/context_manager/history.rs
+index 2d9b647..9908e3a 100644
+--- a/codex-rs/core/src/context_manager/history.rs
++++ b/codex-rs/core/src/context_manager/history.rs
+@@ -306,6 +306,20 @@ impl ContextManager {
+         self.world_state_baseline = None;
+     }
+ 
++    /// Remove response items whose opaque payload is bound to the current model provider.
++    ///
++    /// Reasoning items can contain provider-encrypted content. Keep the semantic conversation
++    /// (messages, tool calls, and their outputs) when switching providers, but do not replay
++    /// those provider-bound items to the next provider.
++    pub(crate) fn drop_provider_bound_items(&mut self) {
++        let items = Arc::make_mut(&mut self.items);
++        let original_len = items.len();
++        items.retain(|envelope| !matches!(&envelope.item, ResponseItem::Reasoning { .. }));
++        if items.len() != original_len {
++            self.history_version = self.history_version.saturating_add(1);
++        }
++    }
++
+     /// Drop the last `num_turns` instruction turns from this history.
+     ///
+     /// Instruction turns are history messages that should behave like a new prompt boundary:
+diff --git a/codex-rs/core/src/context_manager/history_tests.rs b/codex-rs/core/src/context_manager/history_tests.rs
+index 190f617..8190cd4 100644
+--- a/codex-rs/core/src/context_manager/history_tests.rs
++++ b/codex-rs/core/src/context_manager/history_tests.rs
+@@ -411,6 +411,26 @@ fn filters_non_api_messages() {
+     assert_eq!(raw_items(&h), vec![reasoning, u, a]);
+ }
+ 
++#[test]
++fn provider_change_drops_reasoning_but_preserves_semantic_history() {
++    let user = user_msg("hi");
++    let encrypted_reasoning = reasoning_with_encrypted_content(/*len*/ 32);
++    let assistant = assistant_msg("hello");
++    let text_reasoning = reasoning_msg("thinking...");
++    let tool_output = custom_tool_call_output("call", "done");
++    let mut history = create_history_with_items(vec![
++        user.clone(),
++        encrypted_reasoning,
++        assistant.clone(),
++        text_reasoning,
++        tool_output.clone(),
++    ]);
++
++    history.drop_provider_bound_items();
++
++    assert_eq!(raw_items(&history), vec![user, assistant, tool_output]);
++}
++
+ #[test]
+ fn non_last_reasoning_tokens_return_zero_when_no_user_messages() {
+     let history =
 diff --git a/codex-rs/core/src/guardian/review.rs b/codex-rs/core/src/guardian/review.rs
-index 145fa12dcb5f5777005544230d4fcaf65ae3cdb0..c34ab70e6dd6343f9dbe66eacc4cbd2a38c9424b 100644
+index 145fa12..c34ab70 100644
 --- a/codex-rs/core/src/guardian/review.rs
 +++ b/codex-rs/core/src/guardian/review.rs
 @@ -831,8 +831,7 @@ pub(super) async fn guardian_review_session_config(
@@ -1042,7 +1098,7 @@ index 145fa12dcb5f5777005544230d4fcaf65ae3cdb0..c34ab70e6dd6343f9dbe66eacc4cbd2a
          .get_model_info(
              guardian_model.as_str(),
 diff --git a/codex-rs/core/src/guardian/review_session.rs b/codex-rs/core/src/guardian/review_session.rs
-index 9ce3976537f5baee2bd1cfacca0d015929984761..070032f57ea5998020c91a6def98ac8447985c32 100644
+index 9ce3976..070032f 100644
 --- a/codex-rs/core/src/guardian/review_session.rs
 +++ b/codex-rs/core/src/guardian/review_session.rs
 @@ -855,7 +855,7 @@ async fn spawn_guardian_review_session(
@@ -1066,7 +1122,7 @@ index 9ce3976537f5baee2bd1cfacca0d015929984761..070032f57ea5998020c91a6def98ac84
          .get_model_info(
              params.model.as_str(),
 diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
-index 8463ae9e16e997cebd910419f7cf8052b6b97f84..1c035c9d8e92dca7e8fc6239904ee0e56e885e8c 100644
+index 8463ae9..1c035c9 100644
 --- a/codex-rs/core/src/lib.rs
 +++ b/codex-rs/core/src/lib.rs
 @@ -99,6 +99,7 @@ pub(crate) mod mentions {
@@ -1079,7 +1135,7 @@ index 8463ae9e16e997cebd910419f7cf8052b6b97f84..1c035c9d8e92dca7e8fc6239904ee0e5
  mod session_prefix;
 diff --git a/codex-rs/core/src/provider_runtime.rs b/codex-rs/core/src/provider_runtime.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..e5c842a65de7de45cfe21cc3d7a3755010993d14
+index 0000000..e5c842a
 --- /dev/null
 +++ b/codex-rs/core/src/provider_runtime.rs
 @@ -0,0 +1,168 @@
@@ -1253,7 +1309,7 @@ index 0000000000000000000000000000000000000000..e5c842a65de7de45cfe21cc3d7a37550
 +mod tests;
 diff --git a/codex-rs/core/src/provider_runtime_tests.rs b/codex-rs/core/src/provider_runtime_tests.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..b7387e3ed278e7ee258ac2e43c7cae602ec27421
+index 0000000..b7387e3
 --- /dev/null
 +++ b/codex-rs/core/src/provider_runtime_tests.rs
 @@ -0,0 +1,63 @@
@@ -1321,7 +1377,7 @@ index 0000000000000000000000000000000000000000..b7387e3ed278e7ee258ac2e43c7cae60
 +    assert_eq!(runtime.provider.info().name, "umich-toolkit");
 +}
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
-index 04d47879e087b583fb05bce1b927c0f170dd631d..b174cc390bf692e97e7d3afa6b4db942799f3b53 100644
+index 04d4787..0b07d36 100644
 --- a/codex-rs/core/src/session/mod.rs
 +++ b/codex-rs/core/src/session/mod.rs
 @@ -39,6 +39,8 @@ use crate::image_preparation::ImageResizeNoticeMode;
@@ -1402,8 +1458,30 @@ index 04d47879e087b583fb05bce1b927c0f170dd631d..b174cc390bf692e97e7d3afa6b4db942
              step_settings: Arc::new(StepSettings {
                  collaboration_mode,
                  reasoning_summary: config.model_reasoning_summary,
+@@ -1652,6 +1678,11 @@ impl Session {
+             if mcp_inputs_changed {
+                 self.mark_mcp_runtime_dirty();
+             }
++            let provider_changed = state
++                .session_configuration
++                .original_config_do_not_use
++                .model_provider_id
++                != updated.original_config_do_not_use.model_provider_id;
+             let environment_config = updated.inferred_environment_config();
+             if let Some(environments) = &updates.environments {
+                 self.services
+@@ -1664,6 +1695,9 @@ impl Session {
+                     .turn_environments
+                     .update_thread_config(&environment_config);
+             }
++            if provider_changed {
++                state.history.drop_provider_bound_items();
++            }
+             state.session_configuration = updated;
+             let new_config = notify_config_contributors
+                 .then(|| self.build_effective_session_config(&state.session_configuration));
 diff --git a/codex-rs/core/src/session/review.rs b/codex-rs/core/src/session/review.rs
-index 0cff77417915dc544c121d556dfccb0e820b3022..bc59405b5570aab54f5949e1030abe0b846c82d2 100644
+index 0cff774..bc59405 100644
 --- a/codex-rs/core/src/session/review.rs
 +++ b/codex-rs/core/src/session/review.rs
 @@ -15,16 +15,14 @@ pub(super) async fn spawn_review_thread(
@@ -1433,8 +1511,175 @@ index 0cff77417915dc544c121d556dfccb0e820b3022..bc59405b5570aab54f5949e1030abe0b
          session_source,
          history_mode: parent_turn_context.history_mode,
          parent_thread_id: parent_turn_context.parent_thread_id,
+diff --git a/codex-rs/core/src/session/rollout_reconstruction.rs b/codex-rs/core/src/session/rollout_reconstruction.rs
+index 66e0cf2..df79b39 100644
+--- a/codex-rs/core/src/session/rollout_reconstruction.rs
++++ b/codex-rs/core/src/session/rollout_reconstruction.rs
+@@ -323,6 +323,18 @@ impl Session {
+         if let Some(base_replacement_history) = base_replacement_history {
+             history.replace_annotated(base_replacement_history.to_vec());
+         }
++        // Thread-settings events are persisted separately from response items. Use them as
++        // provider boundaries while replaying so a resumed thread does not send opaque
++        // provider-bound reasoning content to the newly selected provider.
++        let mut replay_provider_id = rollout_items
++            .iter()
++            .find_map(|item| match item {
++                RolloutItem::SessionMeta(session_meta) => {
++                    session_meta.meta.model_provider.as_deref()
++                }
++                _ => None,
++            })
++            .or(Some(turn_context.config.model_provider_id.as_str()));
+         // Materialize exact history semantics from the replay-derived suffix. The eventual lazy
+         // design should keep this same replay shape, but drive it from a resumable reverse source
+         // instead of an eagerly loaded `&[RolloutItem]`.
+@@ -342,6 +354,13 @@ impl Session {
+                     );
+                 }
+                 RolloutItem::InterAgentCommunicationMetadata { .. } => {}
++                RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
++                    let provider_id = event.thread_settings.model_provider_id.as_str();
++                    if replay_provider_id.is_some_and(|previous| previous != provider_id) {
++                        history.drop_provider_bound_items();
++                    }
++                    replay_provider_id = Some(provider_id);
++                }
+                 RolloutItem::Compacted(compacted) => {
+                     if let Some(replacement_history) = &compacted.replacement_history {
+                         // This should actually never happen, because the reverse loop above (to build rollout_suffix)
+diff --git a/codex-rs/core/src/session/rollout_reconstruction_tests.rs b/codex-rs/core/src/session/rollout_reconstruction_tests.rs
+index 4f8c6ce..1b053c9 100644
+--- a/codex-rs/core/src/session/rollout_reconstruction_tests.rs
++++ b/codex-rs/core/src/session/rollout_reconstruction_tests.rs
+@@ -10,6 +10,7 @@ use codex_history::InitialHistory;
+ use codex_history::ResponseItemEnvelope;
+ use codex_history::ResumedHistory;
+ use codex_protocol::AgentPath;
++use codex_protocol::ResponseItemId;
+ use codex_protocol::ThreadId;
+ use codex_protocol::models::ContentItem;
+ use codex_protocol::models::ResponseItem;
+@@ -56,6 +57,16 @@ fn assistant_message(text: &str) -> ResponseItem {
+     }
+ }
+ 
++fn encrypted_reasoning(id: &str) -> ResponseItem {
++    ResponseItem::Reasoning {
++        id: Some(ResponseItemId::from_server(id.to_string())),
++        summary: Vec::new(),
++        content: None,
++        encrypted_content: Some("provider-bound ciphertext".to_string()),
++        internal_chat_message_metadata_passthrough: None,
++    }
++}
++
+ fn annotated(items: Vec<ResponseItem>) -> Vec<ResponseItemEnvelope> {
+     items.into_iter().map(ResponseItemEnvelope::new).collect()
+ }
+@@ -151,6 +162,100 @@ async fn record_initial_history_reconstructs_typed_inter_agent_message() {
+     );
+ }
+ 
++#[tokio::test]
++async fn reconstruct_history_drops_reasoning_across_persisted_provider_changes() {
++    let (session, mut turn_context) = make_session_and_context().await;
++    let openai_settings = session.thread_settings_snapshot().await;
++    let mut umich_settings = openai_settings.clone();
++    umich_settings.model_provider_id = "umich-toolkit".to_string();
++    umich_settings.model = "umich-toolkit::gpt-5.6-terra".to_string();
++    let mut resumed_config = (*turn_context.config).clone();
++    resumed_config.model_provider_id = "umich-toolkit".to_string();
++    turn_context.config = Arc::new(resumed_config);
++
++    let rollout_items = vec![
++        RolloutItem::SessionMeta(SessionMetaLine {
++            meta: SessionMeta {
++                model_provider: Some("openai".to_string()),
++                ..SessionMeta::default()
++            },
++            git: None,
++        }),
++        RolloutItem::ResponseItem(user_message("openai question").into()),
++        RolloutItem::ResponseItem(encrypted_reasoning("rs-openai").into()),
++        RolloutItem::ResponseItem(assistant_message("openai answer").into()),
++        RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(
++            codex_protocol::protocol::ThreadSettingsAppliedEvent {
++                thread_settings: umich_settings,
++            },
++        )),
++        RolloutItem::ResponseItem(user_message("umich question").into()),
++        RolloutItem::ResponseItem(encrypted_reasoning("rs-umich").into()),
++        RolloutItem::ResponseItem(assistant_message("umich answer").into()),
++    ];
++
++    let reconstructed = session
++        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
++        .await;
++
++    assert_eq!(
++        reconstructed.history,
++        annotated(vec![
++            user_message("openai question"),
++            assistant_message("openai answer"),
++            user_message("umich question"),
++            encrypted_reasoning("rs-umich"),
++            assistant_message("umich answer"),
++        ])
++    );
++
++    let (session, turn_context) = make_session_and_context().await;
++    let umich_settings = {
++        let mut settings = session.thread_settings_snapshot().await;
++        settings.model_provider_id = "umich-toolkit".to_string();
++        settings.model = "umich-toolkit::gpt-5.6-terra".to_string();
++        settings
++    };
++    let openai_settings = session.thread_settings_snapshot().await;
++
++    let rollout_items = vec![
++        RolloutItem::SessionMeta(SessionMetaLine {
++            meta: SessionMeta {
++                model_provider: Some("umich-toolkit".to_string()),
++                ..SessionMeta::default()
++            },
++            git: None,
++        }),
++        RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(
++            codex_protocol::protocol::ThreadSettingsAppliedEvent {
++                thread_settings: umich_settings,
++            },
++        )),
++        RolloutItem::ResponseItem(user_message("umich question").into()),
++        RolloutItem::ResponseItem(encrypted_reasoning("rs-umich").into()),
++        RolloutItem::ResponseItem(assistant_message("umich answer").into()),
++        RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(
++            codex_protocol::protocol::ThreadSettingsAppliedEvent {
++                thread_settings: openai_settings,
++            },
++        )),
++        RolloutItem::ResponseItem(user_message("return question").into()),
++    ];
++
++    let reconstructed = session
++        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
++        .await;
++
++    assert_eq!(
++        reconstructed.history,
++        annotated(vec![
++            user_message("umich question"),
++            assistant_message("umich answer"),
++            user_message("return question"),
++        ])
++    );
++}
++
+ #[tokio::test]
+ async fn record_initial_history_ignores_security_risk_scores() {
+     let (session, _turn_context) = make_session_and_context().await;
 diff --git a/codex-rs/core/src/session/session.rs b/codex-rs/core/src/session/session.rs
-index e0250aee6d24178115760251e60c9d50b183521f..ffcf1ffd56506c146568da6dceda2b4f057dbf6c 100644
+index e0250ae..ffcf1ff 100644
 --- a/codex-rs/core/src/session/session.rs
 +++ b/codex-rs/core/src/session/session.rs
 @@ -10,6 +10,7 @@ use crate::config::ConstraintError;
@@ -1510,7 +1755,7 @@ index e0250aee6d24178115760251e60c9d50b183521f..ffcf1ffd56506c146568da6dceda2b4f
          if let Some(environments) = &updates.environments {
              next_configuration.legacy_fallback_cwd = environments.legacy_fallback_cwd.clone();
 diff --git a/codex-rs/core/src/session/step_activation.rs b/codex-rs/core/src/session/step_activation.rs
-index ffbe0ebd19ccbe0fcf0a3a50d936260c8b351a2c..6317f9859703b245bfbf338cef55274226fd98a3 100644
+index ffbe0eb..6317f98 100644
 --- a/codex-rs/core/src/session/step_activation.rs
 +++ b/codex-rs/core/src/session/step_activation.rs
 @@ -11,6 +11,7 @@ use crate::config::ConstraintResult;
@@ -1565,7 +1810,7 @@ index ffbe0ebd19ccbe0fcf0a3a50d936260c8b351a2c..6317f9859703b245bfbf338cef552742
                  self.features.enabled(Feature::Personality),
                  self.features.enabled(Feature::FastMode),
 diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
-index 3889978a0a16e2685007b550d239b2c0bda73fb4..0c6571429caa4c5137c684649d10376bf3898139 100644
+index 3889978..e4dd38c 100644
 --- a/codex-rs/core/src/session/tests.rs
 +++ b/codex-rs/core/src/session/tests.rs
 @@ -50,6 +50,7 @@ use codex_login::auth::AgentIdentityAuthPolicy;
@@ -1576,7 +1821,15 @@ index 3889978a0a16e2685007b550d239b2c0bda73fb4..0c6571429caa4c5137c684649d10376b
  use codex_models_manager::model_info;
  use codex_models_manager::test_support::construct_model_info_offline_for_tests;
  use codex_models_manager::test_support::get_model_offline_for_tests;
-@@ -4353,6 +4354,11 @@ async fn set_rate_limits_retains_previous_credits() {
+@@ -86,6 +87,7 @@ use codex_protocol::turn_input::TurnInputMode;
+ use codex_protocol::turn_input::TurnInputRequest;
+ use codex_protocol::turn_input::TurnInputSubmission;
+ use codex_tools::ToolSpec;
++use codex_utils_output_truncation::TruncationPolicy;
+ use codex_utils_path_uri::PathUri;
+ use std::collections::BTreeMap;
+ use tracing::Span;
+@@ -4353,6 +4355,11 @@ async fn set_rate_limits_retains_previous_credits() {
      };
      let session_configuration = SessionConfiguration {
          provider: create_model_provider(config.model_provider.clone(), /*auth_manager*/ None),
@@ -1588,7 +1841,7 @@ index 3889978a0a16e2685007b550d239b2c0bda73fb4..0c6571429caa4c5137c684649d10376b
          step_settings: Arc::new(StepSettings {
              collaboration_mode,
              reasoning_summary: config.model_reasoning_summary,
-@@ -4469,6 +4475,11 @@ async fn set_rate_limits_updates_plan_type_when_present() {
+@@ -4469,6 +4476,11 @@ async fn set_rate_limits_updates_plan_type_when_present() {
      };
      let session_configuration = SessionConfiguration {
          provider: create_model_provider(config.model_provider.clone(), /*auth_manager*/ None),
@@ -1600,7 +1853,7 @@ index 3889978a0a16e2685007b550d239b2c0bda73fb4..0c6571429caa4c5137c684649d10376b
          step_settings: Arc::new(StepSettings {
              collaboration_mode,
              reasoning_summary: config.model_reasoning_summary,
-@@ -5110,6 +5121,11 @@ pub(crate) async fn make_session_configuration_for_tests() -> SessionConfigurati
+@@ -5110,6 +5122,11 @@ pub(crate) async fn make_session_configuration_for_tests() -> SessionConfigurati
  
      SessionConfiguration {
          provider: create_model_provider(config.model_provider.clone(), /*auth_manager*/ None),
@@ -1612,7 +1865,7 @@ index 3889978a0a16e2685007b550d239b2c0bda73fb4..0c6571429caa4c5137c684649d10376b
          step_settings: Arc::new(StepSettings {
              collaboration_mode,
              reasoning_summary: config.model_reasoning_summary,
-@@ -5149,6 +5165,78 @@ pub(crate) async fn make_session_configuration_for_tests() -> SessionConfigurati
+@@ -5149,6 +5166,135 @@ pub(crate) async fn make_session_configuration_for_tests() -> SessionConfigurati
      }
  }
  
@@ -1688,10 +1941,67 @@ index 3889978a0a16e2685007b550d239b2c0bda73fb4..0c6571429caa4c5137c684649d10376b
 +    assert_eq!(configuration.thread_settings_snapshot(&[]), before);
 +}
 +
++#[tokio::test]
++async fn provider_selection_drops_provider_bound_history_with_settings_commit() {
++    let session = make_session_with_config(|config| {
++        config.model_providers.insert(
++            "umich-toolkit".to_string(),
++            ModelProviderInfo {
++                name: "umich-toolkit".to_string(),
++                base_url: Some("https://toolkit.example/v1".to_string()),
++                ..Default::default()
++            },
++        );
++    })
++    .await
++    .expect("session should start");
++    let user = user_message("question");
++    let reasoning = ResponseItem::Reasoning {
++        id: Some(ResponseItemId::with_suffix("rs", "foreign")),
++        summary: Vec::new(),
++        content: None,
++        encrypted_content: Some("provider-bound ciphertext".to_string()),
++        internal_chat_message_metadata_passthrough: None,
++    };
++    let assistant = ResponseItem::Message {
++        id: None,
++        role: "assistant".to_string(),
++        content: vec![ContentItem::OutputText {
++            text: "answer".to_string(),
++        }],
++        phase: None,
++        internal_chat_message_metadata_passthrough: None,
++    };
++    {
++        let mut state = session.state.lock().await;
++        state.history.record_items(
++            [&user, &reasoning, &assistant],
++            TruncationPolicy::Tokens(10_000),
++        );
++    }
++
++    let commit = session
++        .update_settings(SessionSettingsUpdate {
++            step_settings: StepSettingsUpdate {
++                model: Some("umich-toolkit::gpt-5.6-terra".to_string()),
++                ..Default::default()
++            },
++            ..Default::default()
++        })
++        .await
++        .expect("provider selection should commit");
++
++    assert_eq!(commit.snapshot.model_provider_id, "umich-toolkit");
++    assert_eq!(
++        raw_history_items(&session.clone_history().await),
++        vec![user, assistant]
++    );
++}
++
  #[tokio::test]
  async fn emit_subagent_session_started_includes_fork_lineage_and_originator() {
      use wiremock::Mock;
-@@ -5964,6 +6052,8 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
+@@ -5964,6 +6110,8 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
              config.model_provider.clone(),
              Some(Arc::clone(&auth_manager)),
          ),
@@ -1700,7 +2010,7 @@ index 3889978a0a16e2685007b550d239b2c0bda73fb4..0c6571429caa4c5137c684649d10376b
          step_settings: Arc::new(StepSettings {
              collaboration_mode,
              reasoning_summary: config.model_reasoning_summary,
-@@ -6117,6 +6207,8 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
+@@ -6117,6 +6265,8 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
              config.model_provider.clone(),
              Some(Arc::clone(&auth_manager)),
          ),
@@ -1709,7 +2019,7 @@ index 3889978a0a16e2685007b550d239b2c0bda73fb4..0c6571429caa4c5137c684649d10376b
          step_settings: Arc::new(StepSettings {
              collaboration_mode,
              reasoning_summary: config.model_reasoning_summary,
-@@ -6415,6 +6507,8 @@ async fn make_session_with_config_and_rx(
+@@ -6415,6 +6565,8 @@ async fn make_session_with_config_and_rx(
              config.model_provider.clone(),
              Some(Arc::clone(&auth_manager)),
          ),
@@ -1718,7 +2028,7 @@ index 3889978a0a16e2685007b550d239b2c0bda73fb4..0c6571429caa4c5137c684649d10376b
          step_settings: Arc::new(StepSettings {
              collaboration_mode,
              reasoning_summary: config.model_reasoning_summary,
-@@ -6541,6 +6635,8 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
+@@ -6541,6 +6693,8 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
              config.model_provider.clone(),
              Some(Arc::clone(&auth_manager)),
          ),
@@ -1727,7 +2037,7 @@ index 3889978a0a16e2685007b550d239b2c0bda73fb4..0c6571429caa4c5137c684649d10376b
          step_settings: Arc::new(StepSettings {
              collaboration_mode,
              reasoning_summary: config.model_reasoning_summary,
-@@ -8396,6 +8492,8 @@ where
+@@ -8396,6 +8550,8 @@ where
              config.model_provider.clone(),
              Some(Arc::clone(&auth_manager)),
          ),
@@ -1737,7 +2047,7 @@ index 3889978a0a16e2685007b550d239b2c0bda73fb4..0c6571429caa4c5137c684649d10376b
              collaboration_mode,
              reasoning_summary: config.model_reasoning_summary,
 diff --git a/codex-rs/core/src/session/tests/guardian_tests.rs b/codex-rs/core/src/session/tests/guardian_tests.rs
-index c2a04bf53182c53caf404925fb43378703ca9388..d48a99cd00e8fc4f88ae02cab22bfc3180fc30d4 100644
+index c2a04bf..d48a99c 100644
 --- a/codex-rs/core/src/session/tests/guardian_tests.rs
 +++ b/codex-rs/core/src/session/tests/guardian_tests.rs
 @@ -1267,6 +1267,7 @@ async fn guardian_subagent_does_not_inherit_parent_exec_policy_rules() {
@@ -1757,7 +2067,7 @@ index c2a04bf53182c53caf404925fb43378703ca9388..d48a99cd00e8fc4f88ae02cab22bfc31
          skills_service,
          plugins_manager,
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 9b88c0f5a84d9060a6fba2bedcfabc168b1e923e..8872399006a9afebb7202cd6dbabb162d662d7ce 100644
+index 9b88c0f..8872399 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
 @@ -162,8 +162,15 @@ pub(crate) async fn run_turn(
@@ -1797,7 +2107,7 @@ index 9b88c0f5a84d9060a6fba2bedcfabc168b1e923e..8872399006a9afebb7202cd6dbabb162
                      .refresh_if_new_etag(etag, turn_context.config.http_client_factory())
                      .await;
 diff --git a/codex-rs/core/src/session/turn_context.rs b/codex-rs/core/src/session/turn_context.rs
-index 04d04a7bcb01decf4325ee0036c3b609bf680e66..950caa6836e59b61cabc99f4cba3a58eb51c8bc8 100644
+index 04d04a7..950caa6 100644
 --- a/codex-rs/core/src/session/turn_context.rs
 +++ b/codex-rs/core/src/session/turn_context.rs
 @@ -196,6 +196,7 @@ pub struct TurnContext {
@@ -1843,7 +2153,7 @@ index 04d04a7bcb01decf4325ee0036c3b609bf680e66..950caa6836e59b61cabc99f4cba3a58e
                  .network_proxy
                  .load_full()
 diff --git a/codex-rs/core/src/session_startup_prewarm.rs b/codex-rs/core/src/session_startup_prewarm.rs
-index 4b61d92b83ba5684d922e7902686ac68d1b4df00..228d17d2c806d2352a5b0023592ef7e0f9c1386b 100644
+index 4b61d92..228d17d 100644
 --- a/codex-rs/core/src/session_startup_prewarm.rs
 +++ b/codex-rs/core/src/session_startup_prewarm.rs
 @@ -316,7 +316,10 @@ async fn schedule_startup_prewarm_inner(
@@ -1859,7 +2169,7 @@ index 4b61d92b83ba5684d922e7902686ac68d1b4df00..228d17d2c806d2352a5b0023592ef7e0
      client_session
          .prewarm_websocket(
 diff --git a/codex-rs/core/src/tasks/review.rs b/codex-rs/core/src/tasks/review.rs
-index 42ec842e70d38f1930d5d671a2ac048d4b45c2d8..1e5149ec39c9efd771417fa215e4931d634d0cc2 100644
+index 42ec842..1e5149e 100644
 --- a/codex-rs/core/src/tasks/review.rs
 +++ b/codex-rs/core/src/tasks/review.rs
 @@ -128,7 +128,7 @@ async fn start_review_conversation(
@@ -1872,7 +2182,7 @@ index 42ec842e70d38f1930d5d671a2ac048d4b45c2d8..1e5149ec39c9efd771417fa215e4931d
          Arc::clone(&session),
          ctx.clone(),
 diff --git a/codex-rs/core/src/thread_manager.rs b/codex-rs/core/src/thread_manager.rs
-index 333e59d2d0b0a32f3346e6d00ae9a7e4bb5b39cf..33458e3ce44c653483135347e0074a90a5fd4ec4 100644
+index 333e59d..33458e3 100644
 --- a/codex-rs/core/src/thread_manager.rs
 +++ b/codex-rs/core/src/thread_manager.rs
 @@ -345,6 +345,7 @@ pub(crate) struct ThreadManagerState {
@@ -1916,7 +2226,7 @@ index 333e59d2d0b0a32f3346e6d00ae9a7e4bb5b39cf..33458e3ce44c653483135347e0074a90
              skills_service: Arc::clone(&self.skills_service),
              plugins_manager: Arc::clone(&self.plugins_manager),
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents/spawn.rs b/codex-rs/core/src/tools/handlers/multi_agents/spawn.rs
-index 0a5325c195a8beece76391649579b642eaaddb80..64d7440cccb5947ba361403e4cb2d33562cd6300 100644
+index 0a5325c..64d7440 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents/spawn.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents/spawn.rs
 @@ -103,10 +103,11 @@ async fn handle_spawn_agent(
@@ -1933,7 +2243,7 @@ index 0a5325c195a8beece76391649579b642eaaddb80..64d7440cccb5947ba361403e4cb2d335
          turn.config.service_tier.as_deref(),
          args.service_tier.as_deref(),
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_common.rs b/codex-rs/core/src/tools/handlers/multi_agents_common.rs
-index 9fdfd489627a71d9468786f0fd59579a48da1b4a..e2ad9b1289bc9da281b3920f8611272c8a677532 100644
+index 9fdfd48..e2ad9b1 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_common.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_common.rs
 @@ -8,6 +8,7 @@ use crate::session::turn_context::TurnContext;
@@ -2048,7 +2358,7 @@ index 9fdfd489627a71d9468786f0fd59579a48da1b4a..e2ad9b1289bc9da281b3920f8611272c
      model: &str,
      supported_reasoning_levels: &[ReasoningEffortPreset],
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs b/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs
-index 61a6240f9a5df98eac3d8ea73c7c8e83705a521b..ba66bacee121f1b03db63c8691dcbdbbd73bf3f8 100644
+index 61a6240..ba66bac 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs
 @@ -134,7 +134,7 @@ async fn handle_spawn_agent(
@@ -2080,7 +2390,7 @@ index 61a6240f9a5df98eac3d8ea73c7c8e83705a521b..ba66bacee121f1b03db63c8691dcbdbb
                          .await,
                  ),
 diff --git a/codex-rs/model-provider-info/src/lib.rs b/codex-rs/model-provider-info/src/lib.rs
-index 65e2e4cbf75a53d62d4a681cdbd9ac32d47403a6..a5de431d7ef09a79fe71bc5d785c714784f0b0dc 100644
+index 65e2e4c..a5de431 100644
 --- a/codex-rs/model-provider-info/src/lib.rs
 +++ b/codex-rs/model-provider-info/src/lib.rs
 @@ -58,6 +58,79 @@ const CHAT_WIRE_API_REMOVED_ERROR: &str = "`wire_api = \"chat\"` is no longer su
@@ -2164,7 +2474,7 @@ index 65e2e4cbf75a53d62d4a681cdbd9ac32d47403a6..a5de431d7ef09a79fe71bc5d785c7147
  #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, JsonSchema)]
  #[serde(rename_all = "lowercase")]
 diff --git a/codex-rs/model-provider-info/src/model_provider_info_tests.rs b/codex-rs/model-provider-info/src/model_provider_info_tests.rs
-index d08af0ffb54c266d81465cd056944e2085889b97..803bdf4890e51c9e6e5125f10d5a2dd163b95028 100644
+index d08af0f..803bdf4 100644
 --- a/codex-rs/model-provider-info/src/model_provider_info_tests.rs
 +++ b/codex-rs/model-provider-info/src/model_provider_info_tests.rs
 @@ -5,6 +5,45 @@ use pretty_assertions::assert_eq;
