@@ -1,17 +1,34 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "codex-configure"
-version = "0.2.0"
+dynamic = ["version"]
 description = "Configure stock and dynamic Codex model-provider profiles."
 readme = "README.md"
+authors = [{ name = "Christopher Brooks" }]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.11"
 dependencies = ["tomlkit>=0.13,<1"]
+keywords = ["codex", "configuration", "model providers"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+]
 
 [project.scripts]
 codex-configure = "codex_configure.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/cab938/codex-configure"
+Issues = "https://github.com/cab938/codex-configure/issues"
+Repository = "https://github.com/cab938/codex-configure.git"
 
 [tool.setuptools]
 packages = ["codex_configure", "core_provider_model_picker"]
@@ -19,3 +36,6 @@ package-dir = { codex_configure = "src/codex-configure", core_provider_model_pic
 
 [tool.setuptools.package-data]
 core_provider_model_picker = ["*.env", "*.patch", "*.sh", "README.md"]
+
+[tool.setuptools.dynamic]
+version = { attr = "codex_configure.__version__" }

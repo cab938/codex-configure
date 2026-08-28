@@ -1,0 +1,12 @@
+codex-configure
+Copyright 2026 Christopher Brooks
+
+This product includes a patch derived from OpenAI Codex.
+
+OpenAI Codex
+Copyright 2025 OpenAI
+
+OpenAI Codex includes code derived from Ratatui
+(https://github.com/ratatui/ratatui), licensed under the MIT License.
+Copyright (c) 2016-2022 Florian Dehau
+Copyright (c) 2023-2025 The Ratatui Developers

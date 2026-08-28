@@ -513,7 +513,14 @@ def _patched_binary(environ: Mapping[str, str]) -> str:
     binary = Path(value).expanduser()
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise UserFacingError(f"CODEX_CLI_PATH is not an executable file: {binary}")
-    return str(binary.resolve())
+    binary = binary.resolve()
+    code_mode_host = binary.with_name("codex-code-mode-host")
+    if not code_mode_host.is_file() or not os.access(code_mode_host, os.X_OK):
+        raise UserFacingError(
+            "Patched Core is missing the required executable next to CODEX_CLI_PATH: "
+            f"{code_mode_host}. Re-run `codex-configure patch`."
+        )
+    return str(binary)
 
 
 def run_run(
@@ -601,6 +608,7 @@ def run_patch(
     console.write("Codex Core patched and built.")
     console.write("Set the patched Core for future runs with:")
     console.write(result.export_line)
+    console.write(f"Code Mode host: {result.code_mode_host_path}")
     console.write(f"Build directory: {result.worktree}")
     return 0
 

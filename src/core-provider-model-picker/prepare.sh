@@ -85,15 +85,43 @@ git -C "$WORK_DIR" apply --check "$PATCH_FILE" || die "tracked patch does not ap
 git -C "$WORK_DIR" apply "$PATCH_FILE"
 
 if [ "$BUILD" -eq 1 ]; then
-    # codex-cli contains the `codex app-server --stdio` command.
+    # codex-cli contains `codex app-server`; current Core starts the separate
+    # codex-code-mode-host executable from the same directory.
     RUST_VERSION=$(rustc --version 2>/dev/null | awk '{print $2}') || die "rustc is unavailable; install Rust $MINIMUM_RUST_VERSION or newer"
     [ -n "$RUST_VERSION" ] || die "could not determine the installed rustc version"
     LOWEST_RUST_VERSION=$(printf '%s\n%s\n' "$MINIMUM_RUST_VERSION" "$RUST_VERSION" | sort -V | head -n 1)
     [ "$LOWEST_RUST_VERSION" = "$MINIMUM_RUST_VERSION" ] || die "Rust $MINIMUM_RUST_VERSION or newer is required; found $RUST_VERSION"
-    cargo build --release --manifest-path "$WORK_DIR/codex-rs/Cargo.toml" --package codex-cli
+    RUST_TARGET=$(rustc -vV 2>/dev/null | awk '$1 == "host:" {print $2}')
+    [ -n "$RUST_TARGET" ] || die "could not determine the installed Rust host target"
+    CODEX_REPO_ROOT=$WORK_DIR python3 -c '
+import os
+import subprocess
+import sys
+
+work_dir, target = sys.argv[1:]
+sys.path.insert(0, work_dir)
+from scripts.codex_package.targets import TARGET_SPECS
+from scripts.codex_package.v8 import resolve_codex_v8_cargo_env
+
+if target not in TARGET_SPECS:
+    raise SystemExit(f"unsupported Codex package target: {target}")
+environment = {**os.environ, **resolve_codex_v8_cargo_env(TARGET_SPECS[target])}
+subprocess.run(
+    [
+        "cargo", "build", "--release", "--manifest-path",
+        f"{work_dir}/codex-rs/Cargo.toml", "--package", "codex-cli",
+        "--package", "codex-code-mode-host",
+    ],
+    cwd=work_dir,
+    env=environment,
+    check=True,
+)
+' "$WORK_DIR" "$RUST_TARGET"
     BINARY=$WORK_DIR/codex-rs/target/release/codex
+    CODE_MODE_HOST=$WORK_DIR/codex-rs/target/release/codex-code-mode-host
     [ -x "$BINARY" ] || die "cargo build completed without $BINARY"
-    echo "built $BINARY"
+    [ -x "$CODE_MODE_HOST" ] || die "cargo build completed without $CODE_MODE_HOST"
+    echo "built $BINARY and $CODE_MODE_HOST"
 else
     echo "prepared $WORK_DIR at $UPSTREAM_COMMIT with the provider-model picker patch"
 fi

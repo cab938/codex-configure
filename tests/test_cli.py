@@ -279,6 +279,9 @@ class CliFlowTests(unittest.TestCase):
         binary = home / "patched-codex"
         binary.write_text("#!/bin/sh\n", encoding="utf-8")
         binary.chmod(0o700)
+        code_mode_host = home / "codex-code-mode-host"
+        code_mode_host.write_text("#!/bin/sh\n", encoding="utf-8")
+        code_mode_host.chmod(0o700)
         launcher = FakeLauncher()
 
         result = run_run(
@@ -308,6 +311,26 @@ class CliFlowTests(unittest.TestCase):
         active = tomlkit.parse((home / "config.toml").read_text(encoding="utf-8"))
         self.assertNotIn("model_provider", active)
         self.assertNotIn("model_catalog_json", active)
+
+    @mock.patch("codex_configure.cli.sys.platform", "linux")
+    def test_dynamic_run_rejects_missing_code_mode_host(self) -> None:
+        temporary, home = self.make_home()
+        self.addCleanup(temporary.cleanup)
+        manager = ConfigManager(home)
+        self.save_profile(manager, "teaching", "first-secret")
+        binary = home / "patched-codex"
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        binary.chmod(0o700)
+
+        with self.assertRaisesRegex(UserFacingError, "codex-code-mode-host"):
+            run_run(
+                home,
+                "cli",
+                Console(io.StringIO(), io.StringIO()),
+                {"CODEX_CLI_PATH": str(binary)},
+                manager=manager,
+                launcher=FakeLauncher(),
+            )
 
     def test_stock_openai_normalizes_model_saved_by_dynamic_core(self) -> None:
         temporary, home = self.make_home()

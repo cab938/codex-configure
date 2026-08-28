@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import importlib.resources
+import json
 import os
 import re
 import shlex
@@ -11,7 +12,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, Sequence, TextIO
+from typing import Mapping, Protocol, Sequence, TextIO
 
 from .errors import UserFacingError
 
@@ -20,7 +21,20 @@ DEFAULT_DESTINATION = Path("~/.codex-configure/codex-core")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 _VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 _RUSTC_RE = re.compile(r"^rustc ([0-9]+\.[0-9]+\.[0-9]+)(?:[ -]|$)")
+_RUSTC_HOST_RE = re.compile(r"^host: ([A-Za-z0-9_.-]+)$", re.MULTILINE)
 _REMOTE_CREDENTIAL_RE = re.compile(r"(://)([^/@\s]+)@")
+_V8_ENV_SCRIPT = """\
+import json
+import sys
+
+from scripts.codex_package.targets import TARGET_SPECS
+from scripts.codex_package.v8 import resolve_codex_v8_cargo_env
+
+target = sys.argv[1]
+if target not in TARGET_SPECS:
+    raise SystemExit(f"Unsupported Codex package target: {target}")
+print(json.dumps(resolve_codex_v8_cargo_env(TARGET_SPECS[target]), sort_keys=True))
+"""
 
 
 @dataclass(frozen=True)
@@ -32,7 +46,13 @@ class CommandResult:
 
 
 class CommandRunner(Protocol):
-    def run(self, args: Sequence[str], *, cwd: Path | None = None) -> CommandResult: ...
+    def run(
+        self,
+        args: Sequence[str],
+        *,
+        cwd: Path | None = None,
+        environment: Mapping[str, str] | None = None,
+    ) -> CommandResult: ...
 
 
 class SubprocessRunner:
@@ -41,17 +61,25 @@ class SubprocessRunner:
     def __init__(self, progress_output: TextIO | None = None) -> None:
         self.progress_output = progress_output if progress_output is not None else sys.stderr
 
-    def run(self, args: Sequence[str], *, cwd: Path | None = None) -> CommandResult:
+    def run(
+        self,
+        args: Sequence[str],
+        *,
+        cwd: Path | None = None,
+        environment: Mapping[str, str] | None = None,
+    ) -> CommandResult:
         command = tuple(str(arg) for arg in args)
+        child_environment = {**os.environ, **environment} if environment else None
         try:
             if command and command[0] == "cargo" and "build" in command:
-                return self._run_cargo(command, cwd)
+                return self._run_cargo(command, cwd, child_environment)
             completed = subprocess.run(
                 command,
                 cwd=str(cwd) if cwd is not None else None,
                 check=False,
                 capture_output=True,
                 text=True,
+                env=child_environment,
             )
         except OSError as exc:
             raise UserFacingError(
@@ -64,7 +92,12 @@ class SubprocessRunner:
             completed.stderr or "",
         )
 
-    def _run_cargo(self, command: tuple[str, ...], cwd: Path | None) -> CommandResult:
+    def _run_cargo(
+        self,
+        command: tuple[str, ...],
+        cwd: Path | None,
+        environment: Mapping[str, str] | None,
+    ) -> CommandResult:
         try:
             process = subprocess.Popen(
                 command,
@@ -73,6 +106,7 @@ class SubprocessRunner:
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
+                env=environment,
             )
         except OSError as exc:
             raise UserFacingError(
@@ -184,6 +218,7 @@ class PatchResources:
 class PatchResult:
     worktree: Path
     binary_path: Path
+    code_mode_host_path: Path
     upstream_url: str
     upstream_commit: str
     patch_file: Path
@@ -247,13 +282,18 @@ class CodexPatcher:
             self._pin_checkout(worktree, resources)
             self._apply_patch(worktree, resources)
 
-        binary_path = worktree / "codex-rs" / "target" / "release" / "codex"
+        release_dir = worktree / "codex-rs" / "target" / "release"
+        binary_path = release_dir / "codex"
+        code_mode_host_path = release_dir / "codex-code-mode-host"
         self._build(worktree, resources)
-        self._verify_binary(binary_path, worktree)
-        messages.append(f"Built patched Codex Core at {binary_path}")
+        self._verify_binaries(binary_path, code_mode_host_path, worktree)
+        messages.append(
+            f"Built patched Codex Core at {binary_path} with Code Mode host at {code_mode_host_path}"
+        )
         return PatchResult(
             worktree=worktree,
             binary_path=binary_path,
+            code_mode_host_path=code_mode_host_path,
             upstream_url=resources.upstream_url,
             upstream_commit=resources.upstream_commit,
             patch_file=resources.patch_file,
@@ -360,6 +400,7 @@ class CodexPatcher:
         if not manifest.is_file():
             raise UserFacingError(f"Core checkout is missing Cargo manifest: {manifest}")
         self._check_rust_version(resources)
+        v8_environment = self._resolve_v8_environment(worktree)
         self._checked(
             (
                 "cargo",
@@ -369,9 +410,39 @@ class CodexPatcher:
                 str(manifest),
                 "--package",
                 "codex-cli",
+                "--package",
+                "codex-code-mode-host",
             ),
             cwd=worktree,
+            environment=v8_environment,
         )
+
+    def _resolve_v8_environment(self, worktree: Path) -> dict[str, str]:
+        rustc = self._checked(("rustc", "-vV"))
+        host_match = _RUSTC_HOST_RE.search(rustc.stdout)
+        if host_match is None:
+            raise UserFacingError("Could not determine the installed Rust host target.")
+        result = self._checked(
+            (sys.executable, "-c", _V8_ENV_SCRIPT, host_match.group(1)),
+            cwd=worktree,
+            environment={"CODEX_REPO_ROOT": str(worktree)},
+        )
+        try:
+            values = json.loads(result.stdout)
+        except (TypeError, ValueError) as exc:
+            raise UserFacingError("Pinned Codex V8 artifact resolver returned invalid output.") from exc
+        if not isinstance(values, dict):
+            raise UserFacingError("Pinned Codex V8 artifact resolver returned invalid output.")
+        expected = {"RUSTY_V8_ARCHIVE", "RUSTY_V8_SRC_BINDING_PATH"}
+        if not values:
+            return {}
+        if set(values) != expected or not all(isinstance(values[key], str) for key in expected):
+            raise UserFacingError("Pinned Codex V8 artifact resolver returned incomplete output.")
+        resolved = {key: str(Path(values[key]).expanduser().resolve()) for key in expected}
+        missing = [path for path in resolved.values() if not Path(path).is_file()]
+        if missing:
+            raise UserFacingError(f"Pinned Codex V8 artifact resolver did not produce: {missing[0]}")
+        return resolved
 
     def _check_rust_version(self, resources: PatchResources) -> None:
         result = self._checked(("rustc", "--version"))
@@ -387,23 +458,41 @@ class CodexPatcher:
                 "installed toolchain with RUSTUP_TOOLCHAIN."
             )
 
-    def _verify_binary(self, binary_path: Path, worktree: Path) -> None:
-        if not binary_path.is_file():
-            raise UserFacingError(f"Build completed without expected executable: {binary_path}")
-        if not os.access(binary_path, os.X_OK):
-            raise UserFacingError(f"Build produced a non-executable file: {binary_path}")
+    def _verify_binaries(
+        self,
+        binary_path: Path,
+        code_mode_host_path: Path,
+        worktree: Path,
+    ) -> None:
+        for executable in (binary_path, code_mode_host_path):
+            if not executable.is_file():
+                raise UserFacingError(f"Build completed without expected executable: {executable}")
+            if not os.access(executable, os.X_OK):
+                raise UserFacingError(f"Build produced a non-executable file: {executable}")
         result = self._command((str(binary_path), "--version"), cwd=worktree)
         if result.returncode:
             detail = _command_detail(result)
             raise UserFacingError(
                 "Built Codex Core failed its --version check." + (f" ({detail})" if detail else "")
             )
+        host_result = self._command((str(code_mode_host_path), "--help"), cwd=worktree)
+        if host_result.returncode:
+            detail = _command_detail(host_result)
+            raise UserFacingError(
+                "Built Code Mode host failed its --help check."
+                + (f" ({detail})" if detail else "")
+            )
 
-    def _command(self, args: Sequence[str], cwd: Path | None = None) -> CommandResult:
+    def _command(
+        self,
+        args: Sequence[str],
+        cwd: Path | None = None,
+        environment: Mapping[str, str] | None = None,
+    ) -> CommandResult:
         command = tuple(str(arg) for arg in args)
         self._commands.append(command)
         try:
-            result = self.runner.run(command, cwd=cwd)
+            result = self.runner.run(command, cwd=cwd, environment=environment)
         except UserFacingError:
             raise
         except OSError as exc:
@@ -416,8 +505,13 @@ class CodexPatcher:
             )
         return result
 
-    def _checked(self, args: Sequence[str], cwd: Path | None = None) -> CommandResult:
-        result = self._command(args, cwd)
+    def _checked(
+        self,
+        args: Sequence[str],
+        cwd: Path | None = None,
+        environment: Mapping[str, str] | None = None,
+    ) -> CommandResult:
+        result = self._command(args, cwd, environment)
         if result.returncode:
             detail = _command_detail(result)
             raise UserFacingError(

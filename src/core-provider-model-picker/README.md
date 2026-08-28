@@ -17,11 +17,16 @@ src/core-provider-model-picker/prepare.sh \
   --work-dir /tmp/codex-core-provider-picker/codex --build
 ```
 
-The release binary is written to:
+The release executables are written to:
 
 ```text
 /tmp/codex-core-provider-picker/codex/codex-rs/target/release/codex
+/tmp/codex-core-provider-picker/codex/codex-rs/target/release/codex-code-mode-host
 ```
+
+The build uses the pinned upstream repository's checksum-verifying resolver for
+the matching OpenAI-hosted V8 archive and generated binding. Cargo's default
+`rusty_v8` release URL does not publish the Codex-specific build variant.
 
 The patch is intentionally generated against the pinned commit. When upstream
 changes, update `upstream-pin.env`, apply the patch to a fresh checkout, make

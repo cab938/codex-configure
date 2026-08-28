@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from . import __version__
 from .errors import UserFacingError
 from .providers import UMICH_TOOLKIT_DISCOVERY_URL
 
@@ -177,7 +178,7 @@ class CatalogService:
         return models
 
     def _fetch_umich_model_ids(self, api_key: str | None = None) -> set[str]:
-        headers = {"Accept": "application/json", "User-Agent": "codex-configure/0.1"}
+        headers = {"Accept": "application/json", "User-Agent": f"codex-configure/{__version__}"}
         if api_key:
             headers["x-portkey-api-key"] = api_key
         request = urllib.request.Request(

@@ -9,35 +9,35 @@ There are two ways to use it:
 
 Both modes preserve the existing OpenAI sign-in and share the same tasks, settings, skills, and plugins in `CODEX_HOME`.
 
-## Prerequisites
+> **Important:** Every `codex-configure run` command writes the selected active configuration to `$CODEX_HOME/config.toml` before launching Codex. This is a persistent change to the file, not a process-local override: it remains after Codex exits until another `codex-configure run` or `codex-configure restore` replaces it. Initialization preserves the original configuration, and switches are transactional and recoverable, but this tool does modify Codex's `config.toml`.
+
+## Install
 
 All users need:
 
 - Python 3.11 or newer;
-- Git;
+- [pipx](https://pipx.pypa.io/latest/how-to/install-pipx.html);
 - the [Codex CLI](https://learn.chatgpt.com/docs/codex/cli), signed in with ChatGPT; and
 - the ChatGPT desktop app, signed in with the same account.
 
 Linux users can follow the [ChatGPT Linux installation guide](https://learn.chatgpt.com/docs/linux/linux-app). macOS users can install the ChatGPT app from the [OpenAI desktop page](https://openai.com/chatgpt/desktop/). Fully quit both clients before changing an active profile.
 
-Install `codex-configure` in its own Python environment:
+Install `codex-configure` from PyPI:
 
 ```bash
-git clone https://github.com/cab938/codex-configure.git
-cd codex-configure
-python3 -m venv .venv
-.venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install -e .
+pipx install codex-configure
 ```
 
-On macOS, install Python and Git first if `python3` or `git` is unavailable. Homebrew users can run `brew install python git`.
+`pipx` creates an isolated environment and exposes the `codex-configure` command. If the command is not found after installation, run `pipx ensurepath` and open a new terminal. To install a source checkout instead, run `pipx install .` from the repository root.
+
+On macOS, install Python and pipx first if they are unavailable. Homebrew users can run `brew install python pipx`. Dynamic Picker also requires Git and Rust as described below.
 
 ## Initialize Providers
 
 Run setup once for each U-M Toolkit key you want to use:
 
 ```bash
-.venv/bin/codex-configure init
+codex-configure init
 ```
 
 Setup shows the stock and existing providers, then offers **New U-M GPT Toolkit Service**. It asks for:
@@ -56,15 +56,15 @@ Per-launch profiles work on macOS and Linux without changing Codex Core. The pro
 
 ```bash
 # Existing OpenAI sign-in, stock Core
-.venv/bin/codex-configure run openai/cli
-.venv/bin/codex-configure run openai/desktop
+codex-configure run openai/cli
+codex-configure run openai/desktop
 
 # A named U-M profile, stock Core
-.venv/bin/codex-configure run teaching/cli
-.venv/bin/codex-configure run teaching/desktop
+codex-configure run teaching/cli
+codex-configure run teaching/desktop
 ```
 
-This mode temporarily materializes the selected provider in `$CODEX_HOME/config.toml`, prints the profile directory it used, and launches the requested stock client. It removes any inherited `CODEX_CLI_PATH` so a global shell setting cannot accidentally select the patched Core.
+Before launching, this mode replaces the active `$CODEX_HOME/config.toml` with a configuration for the selected provider. The change is not automatically undone when the CLI or desktop app exits; it remains active until a later `codex-configure run` selects another configuration or `codex-configure restore` is run. The command prints the profile directory it used and removes any inherited `CODEX_CLI_PATH` so a global shell setting cannot accidentally select the patched Core.
 
 Only the selected U-M key is added to that child process. OpenAI launches receive no U-M credentials.
 When returning from Dynamic Picker, a saved `openai::` model is unqualified for stock Core; an external-qualified model is omitted so stock OpenAI can choose its own supported default.
@@ -78,18 +78,18 @@ Dynamic Picker is a research feature currently supported and tested on Linux onl
 An agent or developer can install it with this bounded sequence:
 
 - Install Rust 1.94 or newer with [rustup](https://rustup.rs/) and make sure `cargo` is on `PATH`. If an older stable toolchain is already installed, run `rustup update stable` first.
-- Run `.venv/bin/codex-configure patch`.
-- Wait for the pinned OpenAI Codex source to be cloned, patched, and built under `~/.codex-configure/codex-core/`.
+- Run `codex-configure patch`.
+- Wait for the pinned OpenAI Codex source to be cloned, patched, and built under `~/.codex-configure/codex-core/`. The build produces both `codex` and its required `codex-code-mode-host` companion. It uses the pinned repository's checksum-verifying resolver for OpenAI's matching V8 artifacts.
 - Set the exact `export CODEX_CLI_PATH=...` line printed by the command in the shell used to launch Codex.
-- Run `.venv/bin/codex-configure run desktop` or `.venv/bin/codex-configure run cli`.
+- Run `codex-configure run desktop` or `codex-configure run cli`.
 
 To place the source checkout elsewhere, pass the destination explicitly:
 
 ```bash
-.venv/bin/codex-configure patch /absolute/path/to/codex-core
+codex-configure patch /absolute/path/to/codex-core
 ```
 
-The unqualified `desktop` and `cli` targets are intentionally different from `provider/app`: they activate the shared OpenAI base, load all configured provider credentials, and use the binary at `CODEX_CLI_PATH`. The desktop child receives that variable; the CLI executes that binary directly.
+The unqualified `desktop` and `cli` targets are intentionally different from `provider/app`: before launching, they replace `$CODEX_HOME/config.toml` with the shared OpenAI base, load all configured provider credentials, and use the binary at `CODEX_CLI_PATH`. This change to `config.toml` also remains after Codex exits. The desktop child receives `CODEX_CLI_PATH`; the CLI executes that binary directly. Both targets require an executable `codex-code-mode-host` beside the patched binary.
 
 The existing picker shows qualified entries such as:
 
@@ -127,7 +127,7 @@ $CODEX_HOME/
     `-- recovery/                     # last-known-good transaction state
 ```
 
-On first initialization, the existing `config.toml` is preserved before any profile is activated. `codex-configure` never replaces `auth.json`, recursively backs up `CODEX_HOME`, or copies credentials into descriptors, catalogs, profiles, diagnostics, or recovery files.
+On first initialization, the existing `config.toml` is preserved before any profile is activated. Normal `run` commands then write the selected materialized configuration to the active `config.toml`; atomic switching and recovery protect that operation, but do not make it temporary. `codex-configure` never replaces `auth.json`, recursively backs up `CODEX_HOME`, or copies credentials into descriptors, catalogs, profiles, diagnostics, or recovery files.
 
 The `.env` file is created with mode `0600`, and tool-owned directories use mode `0700`. An environment variable with the expected name can override a stored key for one launch.
 
@@ -136,32 +136,32 @@ The `.env` file is created with mode `0600`, and tool-owned directories use mode
 Inspect the managed configuration without changing it:
 
 ```bash
-.venv/bin/codex-configure doctor
+codex-configure doctor
 ```
 
 Restore the maintained OpenAI base, or the immutable first-run snapshot:
 
 ```bash
-.venv/bin/codex-configure restore
-.venv/bin/codex-configure restore --original
+codex-configure restore
+codex-configure restore --original
 ```
 
 Switching and restore commands refuse to proceed while a known Codex or ChatGPT process is running. They also reject unexpected outside changes to routing fields instead of overwriting them. Unrelated settings written by Codex are retained.
 
 ## Troubleshooting
 
-If the CLI says setup is missing, run `.venv/bin/codex-configure init` with the intended `CODEX_HOME`. Copying a complete managed `$CODEX_HOME/codex-configure/` layout, including its base/state files and valid provider catalogs, also counts as initialized after validation.
+If the CLI says setup is missing, run `codex-configure init` with the intended `CODEX_HOME`. Copying a complete managed `$CODEX_HOME/codex-configure/` layout, including its base/state files and valid provider catalogs, also counts as initialized after validation.
 
 If the desktop command cannot be found, set an explicit launch command:
 
 ```bash
-CODEX_DESKTOP_COMMAND=/path/to/chatgpt .venv/bin/codex-configure run openai/desktop
+CODEX_DESKTOP_COMMAND=/path/to/chatgpt codex-configure run openai/desktop
 ```
 
 Some Linux virtual machines need Chromium software rendering:
 
 ```bash
-CODEX_DESKTOP_COMMAND='chatgpt --use-angle=swiftshader' .venv/bin/codex-configure run desktop
+CODEX_DESKTOP_COMMAND='chatgpt --use-angle=swiftshader' codex-configure run desktop
 ```
 
 If a credential permission check fails, repair it with:
@@ -171,4 +171,8 @@ chmod 700 "${CODEX_HOME:-$HOME/.codex}/codex-configure"
 chmod 600 "${CODEX_HOME:-$HOME/.codex}/codex-configure/.env"
 ```
 
-Architecture, patch maintenance, and manual acceptance details are in [docs/architecture.md](docs/architecture.md). U-M model discovery is not an entitlement guarantee: a provider may still reject an advertised model because of deployment access, account policy, or budget.
+Architecture, patch maintenance, and manual acceptance details are in [docs/architecture.md](https://github.com/cab938/codex-configure/blob/main/docs/architecture.md). U-M model discovery is not an entitlement guarantee: a provider may still reject an advertised model because of deployment access, account policy, or budget.
+
+## License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](https://github.com/cab938/codex-configure/blob/main/LICENSE) and [NOTICE](https://github.com/cab938/codex-configure/blob/main/NOTICE).
