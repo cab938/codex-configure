@@ -599,7 +599,6 @@ def run_run(
         raise UserFacingError("The dynamic provider picker is supported on Linux only in this release.")
     binary = _patched_binary(environ)
     command = [binary] if app == "cli" else launcher.validate("desktop", requires_environment=True)
-    launcher.ensure_clients_stopped()
     descriptors = _profiles(manager)
     values = manager.load_credentials(environ)
     missing = [item.id for item in descriptors if item.env_key and not values.get(item.env_key)]

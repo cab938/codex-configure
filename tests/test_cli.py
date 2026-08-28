@@ -240,6 +240,7 @@ class CliFlowTests(unittest.TestCase):
         )
 
         self.assertEqual(result, 0)
+        self.assertEqual(launcher.stopped_checks, 1)
         self.assertEqual(launcher.launches, [(["fake-cli"], {"TEACHING_API_KEY": "file-secret"})])
         self.assertEqual(launcher.removed_environment, [("CODEX_CLI_PATH",)])
         active = tomlkit.parse((home / "config.toml").read_text(encoding="utf-8"))
@@ -271,7 +272,7 @@ class CliFlowTests(unittest.TestCase):
         self.assertEqual((home / "config.toml").read_text(encoding="utf-8"), before)
 
     @mock.patch("codex_configure.cli.sys.platform", "linux")
-    def test_dynamic_desktop_loads_every_key_and_patched_binary(self) -> None:
+    def test_dynamic_desktop_loads_keys_without_requiring_clients_stopped(self) -> None:
         temporary, home = self.make_home()
         self.addCleanup(temporary.cleanup)
         manager = ConfigManager(home)
@@ -295,6 +296,7 @@ class CliFlowTests(unittest.TestCase):
         )
 
         self.assertEqual(result, 0)
+        self.assertEqual(launcher.stopped_checks, 0)
         self.assertEqual(launcher.validated, ["desktop"])
         self.assertEqual(
             launcher.launches,

@@ -97,6 +97,8 @@ codex-configure run desktop
 codex-configure run cli
 ```
 
+Dynamic launches do not require existing Codex clients to stop because they keep the shared base configuration and route each task through the patched Core. An already-running Desktop process still retains the environment from its first launch: if it was started with stock Core, close it once and restart it with `codex-configure run desktop` before relying on Dynamic Picker.
+
 To build from source instead, install Git plus Rust 1.94 or newer from [rustup](https://rustup.rs/), with `cargo` on `PATH`, and run:
 
 ```bash
@@ -168,7 +170,7 @@ codex-configure restore
 codex-configure restore --original
 ```
 
-Switching and restore commands refuse to proceed while a known Codex or ChatGPT process is running. They also reject unexpected outside changes to routing fields instead of overwriting them. Unrelated settings written by Codex are retained.
+Named stock-profile switching and restore commands refuse to proceed while a known Codex or ChatGPT process is running. They also reject unexpected outside changes to routing fields instead of overwriting them. Unrelated settings written by Codex are retained.
 
 ## Troubleshooting
 
