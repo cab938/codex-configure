@@ -17,7 +17,7 @@ It deliberately provides two operating modes.
 | `run name/cli` or `run name/desktop` | Stock | Named U-M service fixed for that launch |
 | `run cli` or `run desktop` | Patched | Qualified provider/model in the existing picker |
 
-Per-launch profiles support macOS and Linux. Dynamic Picker is supported and acceptance-tested on Linux only.
+Per-launch profiles support macOS and Linux. Dynamic Picker is supported and acceptance-tested on Linux x86_64 with the Ubuntu 22.04 / glibc 2.35 baseline only.
 
 ## System Boundary
 
@@ -64,6 +64,21 @@ $CODEX_HOME/
 ```
 
 Tool-owned directories use mode `0700`; state, descriptors, catalogs, profiles, recovery data, and credentials use mode `0600`.
+
+Prebuilt Dynamic Core releases live outside `CODEX_HOME` so custom Codex homes share one installation:
+
+```text
+~/.codex-configure/cores/
+|-- codex-configure-core-<version>-linux-x86_64/
+|   |-- codex
+|   |-- codex-code-mode-host
+|   |-- manifest.json
+|   |-- LICENSE
+|   `-- NOTICE
+`-- current -> codex-configure-core-<version>-linux-x86_64
+```
+
+Installations are immutable by convention and versioned for rollback. Runtime accepts `current` only when it selects the installed Python package's version; rollback therefore means installing the matching earlier Python package and rerunning setup. `setup dynamic` verifies a release SHA-256 sidecar, a manifest tied to the installed Python package's upstream pin and patch hash, and both executable hashes before atomically replacing the `current` symlink. It rejects unexpected archive members, links, special files, and unsafe paths. The release checksum detects corruption but is distributed with the asset and is not an independent signature.
 
 Initialization is considered complete only when the base/recovery state and at least one valid external descriptor/catalog pair exist. A user may therefore copy a complete non-secret provider layout and supply its declared keys through the environment instead of repeating interactive setup.
 
@@ -137,6 +152,19 @@ The picker displays and returns the same qualified value, for example `teaching:
 
 A user may change provider between completed turns without forking. Provider transport, authentication, sticky-routing state, and prompt-cache state are turn-scoped and rebuilt for the selected provider. Provider reasoning items can contain opaque state another provider cannot validate, so they are removed at a provider boundary while user, assistant, and tool history remain. Resume reconstructs the same boundaries from persisted settings.
 
+## Linux Core Release
+
+The Linux binary and Python package share a version. Release preparation is intentionally two-stage so PyPI never points users at an absent Core asset:
+
+1. Bump the package version and complete the patch refresh and targeted checks.
+2. Push the version tag and create a GitHub draft release for that tag.
+3. Manually run the `Build Linux Dynamic Core` workflow with the draft tag. It checks out that tag, builds stripped release executables on `ubuntu-22.04`, creates the versioned archive and checksum, and uploads both to the draft without replacing an existing asset.
+4. Inspect the workflow result, use authenticated `gh release download` to retrieve the draft assets, verify the checksum, and run the Linux VM acceptance against the unpacked candidate.
+5. Publish the draft release. The `Publish to PyPI` workflow downloads and verifies the required Linux asset checksum before publishing the wheel and source distribution through PyPI Trusted Publishing.
+6. On a clean compatible Linux account, run the documented `pipx install codex-configure && codex-configure setup dynamic` path as a public-download smoke check.
+
+Keeping draft publication as the human gate prevents an uninspected binary build from publishing the Python installer. A failed or repeated binary workflow leaves the draft unpublished and does not overwrite existing assets.
+
 ## Patch Refresh
 
 OpenAI publishes Codex frequently, so the patch is deliberately pinned and source-based. To refresh it:
@@ -148,17 +176,17 @@ OpenAI publishes Codex frequently, so the patch is deliberately pinned and sourc
 5. Run `git apply --check`, the focused external-catalog/parser/session/App Server checks recorded beside the patch, and one release build.
 6. Run the Linux VM acceptance below before claiming the refreshed pin works with Desktop.
 
-`codex-configure patch [PATH]` implements the user build path. It validates the Git root and canonical remote, checks out the exact pin without reset or broad cleanup, applies the patch to the index, checks the pinned minimum Rust version, builds `codex-cli --release`, verifies the executable, and safely recognizes an idempotent rerun. It refuses symlinks, wrong remotes, unrelated dirty state, and a patch that no longer applies.
+`codex-configure patch [PATH]` remains the one-command source-build fallback. It validates the Git root and canonical remote, checks out the exact pin without reset or broad cleanup, applies the patch to the index, checks the pinned minimum Rust version, builds stripped release `codex` and `codex-code-mode-host` executables, verifies both, and safely recognizes an idempotent rerun. Runtime resolution prefers an explicit `CODEX_CLI_PATH`, then the installed `cores/current` release, then the default source build. The builder refuses symlinks, wrong remotes, unrelated dirty state, and a patch that no longer applies.
 
 ## Manual Linux VM Acceptance
 
 This is an agent-invoked release check, not CI. Use a dedicated Linux VM account and an isolated acceptance directory. Do not point tests at that account's normal `~/.codex`.
 
 1. Confirm the VM is running, SSH is reachable, the desktop package is installed, and enough disk is available. Discover live VM state rather than assuming an address or libvirt alias.
-2. Build once on a host with Rust and disk space using `codex-configure patch /absolute/dedicated/path`. Copy the resulting `codex` and adjacent `codex-code-mode-host` executables, this repository, and the intended `auth.json` into the VM acceptance directory. Keep both executables together. Set copied authentication to mode `0600`; never copy the whole Codex home.
+2. Install the candidate Python package in the VM account. Use an authenticated `gh release download` to retrieve the draft archive and sidecar, run `sha256sum --check`, and unpack it in the isolated acceptance directory. For a patch-refresh diagnosis, a host source build made with `codex-configure patch /absolute/dedicated/path` may be copied instead. Keep `codex` and `codex-code-mode-host` together. Copy only the intended `auth.json` into the isolated acceptance home, set it to mode `0600`, and never copy the whole normal Codex home.
 3. Set an isolated `CODEX_HOME` in the VM acceptance directory. Run `codex-configure init` twice with disposable low-budget keys and distinct short names. Confirm two descriptors, two catalogs, two distinct `.env` variables, mode `0600`, and no key text outside `.env`.
 4. Run the stdlib canary in `src/core-provider-model-picker/app_server_canary.py` once for each external provider. Supply the patched binary, isolated Codex home, provider short name, and an isolated task directory. The canary proves qualified catalog entries, OpenAI-to-external continuity in one task, and provider restoration after App Server restart without printing credentials.
-5. Start `codex-configure run desktop` with `CODEX_CLI_PATH` set to the copied binary. For a graphics-limited VM, set `CODEX_DESKTOP_COMMAND='chatgpt --use-angle=swiftshader'`.
+5. Start `codex-configure run desktop` with `CODEX_CLI_PATH` set to the unpacked draft candidate. For a graphics-limited VM, set `CODEX_DESKTOP_COMMAND='chatgpt --use-angle=swiftshader'`.
 6. In a private VM display, verify the real picker shows `openai::...` and both external namespaces. Make one exact-marker turn with OpenAI, change to each named provider between turns, return to OpenAI, restart Desktop, and resume the same task. Confirm the semantic markers survive and the last provider/model is restored.
 7. Run `run first/cli`, `run second/cli`, and `run openai/cli` with exact-marker prompts to cover stock Core profile launches. Confirm stock launches remove an inherited `CODEX_CLI_PATH`.
 8. Compare the normal Codex home's pre/post hashes and permissions. It must be unchanged. Retain only non-secret logs, task IDs, versions, and screenshots needed to identify the tested pin and desktop build.
@@ -182,4 +210,4 @@ A Desktop `GET /backend-api/accounts/.../settings` 401 with `Must use workspace 
 - Keep keys in one protected tool-owned file rather than a keychain or `auth.json`.
 - Preserve and recover `config.toml` transactionally.
 - Pin and rebuild the smallest maintainable Core patch instead of vendoring Codex.
-- Claim Dynamic Picker support on Linux only until another platform passes the same acceptance boundary.
+- Claim Dynamic Picker support on Linux x86_64 with the Ubuntu 22.04 / glibc 2.35 baseline only until another platform passes the same acceptance boundary.

@@ -30,7 +30,7 @@ pipx install codex-configure
 
 `pipx` creates an isolated environment and exposes the `codex-configure` command. If the command is not found after installation, run `pipx ensurepath` and open a new terminal. To install a source checkout instead, run `pipx install .` from the repository root.
 
-On macOS, install Python and pipx first if they are unavailable. Homebrew users can run `brew install python pipx`. Dynamic Picker also requires Git and Rust as described below.
+On macOS, install Python and pipx first if they are unavailable. Homebrew users can run `brew install python pipx`.
 
 ## Initialize Providers
 
@@ -73,23 +73,45 @@ On macOS, `codex-configure` launches the executable inside `ChatGPT.app` so the 
 
 ## Dynamic Picker
 
-Dynamic Picker is a research feature currently supported and tested on Linux only. It keeps the stock desktop renderer and patches the open-source Codex Core used behind it.
+Dynamic Picker is a research feature currently supported and tested on Linux x86_64 with glibc 2.35 or newer (the Ubuntu 22.04 baseline). It keeps the stock desktop renderer and patches the open-source Codex Core used behind it.
 
-An agent or developer can install it with this bounded sequence:
+Install the matching prebuilt Core release with one command:
 
-- Install Rust 1.94 or newer with [rustup](https://rustup.rs/) and make sure `cargo` is on `PATH`. If an older stable toolchain is already installed, run `rustup update stable` first.
-- Run `codex-configure patch`.
-- Wait for the pinned OpenAI Codex source to be cloned, patched, and built under `~/.codex-configure/codex-core/`. The build produces both `codex` and its required `codex-code-mode-host` companion. It uses the pinned repository's checksum-verifying resolver for OpenAI's matching V8 artifacts.
-- Set the exact `export CODEX_CLI_PATH=...` line printed by the command in the shell used to launch Codex.
-- Run `codex-configure run desktop` or `codex-configure run cli`.
+```bash
+codex-configure setup dynamic
+```
 
-To place the source checkout elsewhere, pass the destination explicitly:
+For a new machine, the package and Core can be installed together:
+
+```bash
+pipx install codex-configure && codex-configure setup dynamic
+```
+
+The setup command downloads the Linux x86_64 asset for the installed `codex-configure` version, verifies the release checksum plus its pinned-patch manifest, and installs it under `~/.codex-configure/cores/codex-configure-core-<version>-linux-x86_64/`. An atomic `~/.codex-configure/cores/current` link selects the active version; older versioned installations remain available for rollback by reinstalling the matching Python package version and rerunning setup. No Git or Rust installation is required for this path.
+
+The installed Core is discovered automatically. No shell export is needed:
+
+```bash
+codex-configure run desktop
+# or
+codex-configure run cli
+```
+
+To build from source instead, install Git plus Rust 1.94 or newer from [rustup](https://rustup.rs/), with `cargo` on `PATH`, and run:
+
+```bash
+codex-configure patch
+```
+
+The fallback command checks out the pinned source, applies the packaged patch, and builds under `~/.codex-configure/codex-core/`. To place that checkout elsewhere, pass the destination explicitly:
 
 ```bash
 codex-configure patch /absolute/path/to/codex-core
 ```
 
-The unqualified `desktop` and `cli` targets are intentionally different from `provider/app`: before launching, they replace `$CODEX_HOME/config.toml` with the shared OpenAI base, load all configured provider credentials, and use the binary at `CODEX_CLI_PATH`. This change to `config.toml` also remains after Codex exits. The desktop child receives `CODEX_CLI_PATH`; the CLI executes that binary directly. Both targets require an executable `codex-code-mode-host` beside the patched binary.
+For a custom destination, set the exact `export CODEX_CLI_PATH=...` line printed by `patch`, or set that variable only on the later `run` command. Resolution order is an explicit `CODEX_CLI_PATH`, the installed `cores/current` release, then the default source build.
+
+The unqualified `desktop` and `cli` targets are intentionally different from `provider/app`: before launching, they replace `$CODEX_HOME/config.toml` with the shared OpenAI base, load all configured provider credentials, and use the resolved patched Core. This change to `config.toml` also remains after Codex exits. The desktop child receives `CODEX_CLI_PATH`; the CLI executes that binary directly. Both targets require an executable `codex-code-mode-host` beside the patched binary.
 
 The existing picker shows qualified entries such as:
 

@@ -4,7 +4,7 @@ This directory is the canonical maintenance boundary for the patched Codex
 Core binary. It does not vendor the upstream repository. `upstream-pin.env`
 records the tested upstream commit, `codex-provider-model-picker.patch` is the
 complete patch, and `prepare.sh` checks out that commit, verifies and applies
-the patch, and optionally builds `codex`.
+the patch, and optionally builds `codex` plus `codex-code-mode-host`.
 
 ## Build
 
@@ -24,7 +24,7 @@ The release executables are written to:
 /tmp/codex-core-provider-picker/codex/codex-rs/target/release/codex-code-mode-host
 ```
 
-The build uses the pinned upstream repository's checksum-verifying resolver for
+The build strips release symbols and uses the pinned upstream repository's checksum-verifying resolver for
 the matching OpenAI-hosted V8 archive and generated binding. Cargo's default
 `rusty_v8` release URL does not publish the Codex-specific build variant.
 

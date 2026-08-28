@@ -506,19 +506,54 @@ def _run_target(target: str) -> tuple[str | None, str]:
 
 def _patched_binary(environ: Mapping[str, str]) -> str:
     value = environ.get("CODEX_CLI_PATH", "").strip()
-    if not value:
-        raise UserFacingError(
-            "Dynamic runs require CODEX_CLI_PATH. Run `codex-configure patch` and export the path it prints."
+    if value:
+        binary = Path(value).expanduser()
+        missing_message = f"CODEX_CLI_PATH is not an executable file: {binary}"
+    else:
+        try:
+            from .core_install import CoreInstaller
+            from .patcher import CodexPatcher
+        except ImportError as exc:
+            raise UserFacingError(
+                "The Dynamic Core backends are not installed in this codex-configure build."
+            ) from exc
+        configured_home = environ.get("HOME", "").strip()
+        home = Path(configured_home) if configured_home else None
+        installed = CoreInstaller.current_binary(home)
+        installed_matches_package = False
+        if installed.is_file() and os.access(installed, os.X_OK):
+            try:
+                installed_matches_package = (
+                    installed.resolve().parent == CoreInstaller.versioned_directory(home).resolve()
+                )
+            except (OSError, RuntimeError):
+                pass
+        candidates = (
+            *((installed,) if installed_matches_package else ()),
+            CodexPatcher.default_binary(home),
         )
-    binary = Path(value).expanduser()
+        binary = next(
+            (
+                candidate
+                for candidate in candidates
+                if candidate.is_file() and os.access(candidate, os.X_OK)
+            ),
+            candidates[0],
+        )
+        missing_message = (
+            "Dynamic Core is not installed. Run `codex-configure setup dynamic`, "
+            "use `codex-configure patch` for a source build, or set CODEX_CLI_PATH "
+            "to a custom build."
+        )
     if not binary.is_file() or not os.access(binary, os.X_OK):
-        raise UserFacingError(f"CODEX_CLI_PATH is not an executable file: {binary}")
+        raise UserFacingError(missing_message)
     binary = binary.resolve()
     code_mode_host = binary.with_name("codex-code-mode-host")
     if not code_mode_host.is_file() or not os.access(code_mode_host, os.X_OK):
         raise UserFacingError(
-            "Patched Core is missing the required executable next to CODEX_CLI_PATH: "
-            f"{code_mode_host}. Re-run `codex-configure patch`."
+            "Patched Core is missing the required adjacent executable: "
+            f"{code_mode_host}. Re-run `codex-configure setup dynamic` or "
+            "`codex-configure patch`."
         )
     return str(binary)
 
@@ -606,10 +641,37 @@ def run_patch(
     destination = checkout_path.expanduser().resolve() if checkout_path else CodexPatcher.default_destination()
     result = CodexPatcher().patch(destination)
     console.write("Codex Core patched and built.")
-    console.write("Set the patched Core for future runs with:")
-    console.write(result.export_line)
+    if result.binary_path == CodexPatcher.default_binary():
+        console.write("Dynamic runs will use this build automatically.")
+    else:
+        console.write("Select this custom build for dynamic runs with:")
+        console.write(result.export_line)
     console.write(f"Code Mode host: {result.code_mode_host_path}")
     console.write(f"Build directory: {result.worktree}")
+    return 0
+
+
+def run_setup_dynamic(
+    console: Console,
+    environ: Mapping[str, str],
+    installer: Any | None = None,
+) -> int:
+    if sys.platform != "linux":
+        raise UserFacingError("Prebuilt Dynamic Core is currently available only on Linux x86_64.")
+    if installer is None:
+        try:
+            from .core_install import CoreInstaller
+        except ImportError as exc:
+            raise UserFacingError(
+                "The Dynamic Core installer is not included in this codex-configure build."
+            ) from exc
+        configured_home = environ.get("HOME", "").strip()
+        installer = CoreInstaller(home=Path(configured_home) if configured_home else None)
+    result = installer.install()
+    action = "Verified existing" if result.reused else "Installed"
+    console.write(f"{action} Dynamic Core {result.version} for {result.target}.")
+    console.write(f"Core directory: {result.install_directory}")
+    console.write("Dynamic runs will use this build automatically.")
     return 0
 
 
@@ -676,6 +738,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("target", help="provider/app or app (cli or desktop).")
     run.add_argument("--codex-home", type=Path, default=argparse.SUPPRESS)
 
+    setup = subparsers.add_parser("setup", help="Install an optional codex-configure component.")
+    setup.add_argument("component", choices=("dynamic",), help="Component to install.")
+
     patch = subparsers.add_parser("patch", help="Check out, patch, and build pinned Codex Core.")
     patch.add_argument("path", nargs="?", type=Path, help="Core checkout/build directory.")
 
@@ -706,6 +771,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run_init(codex_home, console, environ)
         if args.command == "run":
             return run_run(codex_home, args.target, console, environ)
+        if args.command == "setup":
+            return run_setup_dynamic(console, environ)
         if args.command == "patch":
             return run_patch(codex_home, console, environ, args.path)
         if args.command == "doctor":

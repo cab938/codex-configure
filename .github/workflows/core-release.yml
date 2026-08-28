@@ -1,0 +1,136 @@
+name: Build Linux Dynamic Core
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing draft release tag, for example v0.3.0
+        required: true
+        type: string
+
+concurrency:
+  group: dynamic-core-${{ inputs.tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  linux-x86_64:
+    name: Linux x86_64
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Verify tag metadata
+        id: metadata
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          python - <<'PY'
+          import ast
+          import os
+          import re
+          from pathlib import Path
+
+          tag = os.environ["RELEASE_TAG"]
+          if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
+              raise SystemExit(f"invalid release tag: {tag!r}")
+
+          init_tree = ast.parse(Path("src/codex-configure/__init__.py").read_text())
+          package_version = next(
+              ast.literal_eval(node.value)
+              for node in init_tree.body
+              if isinstance(node, ast.Assign)
+              and any(isinstance(target, ast.Name) and target.id == "__version__" for target in node.targets)
+          )
+          if tag != f"v{package_version}":
+              raise SystemExit(f"release tag {tag!r} must be v{package_version}")
+
+          pin = {}
+          for line in Path("src/core-provider-model-picker/upstream-pin.env").read_text().splitlines():
+              if "=" not in line or line.lstrip().startswith("#"):
+                  continue
+              key, value = line.split("=", 1)
+              pin[key.strip()] = ast.literal_eval(value.strip())
+          commit = pin.get("UPSTREAM_COMMIT", "")
+          rust_version = pin.get("MINIMUM_RUST_VERSION", "")
+          if not re.fullmatch(r"[0-9a-f]{40}", commit):
+              raise SystemExit("invalid UPSTREAM_COMMIT")
+          if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", rust_version):
+              raise SystemExit("invalid MINIMUM_RUST_VERSION")
+
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write(f"package_version={package_version}\n")
+              output.write(f"upstream_commit={commit}\n")
+              output.write(f"rust_version={rust_version}\n")
+          PY
+          test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$(git rev-parse HEAD)"
+
+      - name: Require an existing draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          state=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
+          if [ "$state" != "true" ]; then
+            echo "Release $RELEASE_TAG must exist and still be a draft." >&2
+            exit 1
+          fi
+
+      - name: Install pinned Rust toolchain
+        env:
+          RUST_VERSION: ${{ steps.metadata.outputs.rust_version }}
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          echo "RUSTUP_TOOLCHAIN=$RUST_VERSION" >> "$GITHUB_ENV"
+
+      - name: Build patched Core
+        run: src/core-provider-model-picker/prepare.sh --work-dir "$RUNNER_TEMP/codex-core" --build
+
+      - name: Check executables
+        run: |
+          "$RUNNER_TEMP/codex-core/codex-rs/target/release/codex" --version
+          "$RUNNER_TEMP/codex-core/codex-rs/target/release/codex-code-mode-host" --help
+
+      - name: Package release assets
+        env:
+          PACKAGE_VERSION: ${{ steps.metadata.outputs.package_version }}
+          UPSTREAM_COMMIT: ${{ steps.metadata.outputs.upstream_commit }}
+        run: |
+          python scripts/package_core_release.py \
+            --release-dir "$RUNNER_TEMP/codex-core/codex-rs/target/release" \
+            --output-dir dist \
+            --version "$PACKAGE_VERSION" \
+            --target linux-x86_64 \
+            --upstream-commit "$UPSTREAM_COMMIT" \
+            --patch-file src/core-provider-model-picker/codex-provider-model-picker.patch \
+            --license-file LICENSE \
+            --notice-file NOTICE
+
+      - name: Store release assets
+        uses: actions/upload-artifact@v5
+        with:
+          name: dynamic-core-${{ steps.metadata.outputs.package_version }}-linux-x86_64
+          path: dist/
+          if-no-files-found: error
+
+      - name: Upload assets to draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          PACKAGE_VERSION: ${{ steps.metadata.outputs.package_version }}
+        run: |
+          asset="codex-configure-core-${PACKAGE_VERSION}-linux-x86_64.tar.gz"
+          gh release upload "$RELEASE_TAG" "dist/$asset" "dist/$asset.sha256" \
+            --repo "$GITHUB_REPOSITORY"

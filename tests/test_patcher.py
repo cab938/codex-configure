@@ -68,7 +68,14 @@ class PatcherBuildTests(unittest.TestCase):
             ),
             runner.commands,
         )
-        self.assertEqual(runner.environments[-1], v8_environment)
+        self.assertEqual(
+            runner.environments[-1],
+            {
+                **v8_environment,
+                "CARGO_PROFILE_RELEASE_DEBUG": "none",
+                "CARGO_PROFILE_RELEASE_STRIP": "symbols",
+            },
+        )
 
 
 if __name__ == "__main__":

@@ -21,6 +21,7 @@ from codex_configure.cli import (
     run_run,
     run_restore,
 )
+from codex_configure.core_install import CoreInstaller
 from codex_configure.errors import UserFacingError
 from codex_configure.runtime import ConfigManager
 
@@ -311,6 +312,84 @@ class CliFlowTests(unittest.TestCase):
         active = tomlkit.parse((home / "config.toml").read_text(encoding="utf-8"))
         self.assertNotIn("model_provider", active)
         self.assertNotIn("model_catalog_json", active)
+
+    @mock.patch("codex_configure.cli.sys.platform", "linux")
+    def test_dynamic_desktop_finds_default_build_without_environment_override(self) -> None:
+        temporary, home = self.make_home()
+        self.addCleanup(temporary.cleanup)
+        manager = ConfigManager(home)
+        self.save_profile(manager, "teaching", "first-secret")
+        release_dir = (
+            home / ".codex-configure" / "codex-core" / "codex-rs" / "target" / "release"
+        )
+        release_dir.mkdir(parents=True)
+        binary = release_dir / "codex"
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        binary.chmod(0o700)
+        code_mode_host = release_dir / "codex-code-mode-host"
+        code_mode_host.write_text("#!/bin/sh\n", encoding="utf-8")
+        code_mode_host.chmod(0o700)
+        launcher = FakeLauncher()
+
+        result = run_run(
+            home,
+            "desktop",
+            Console(io.StringIO(), io.StringIO()),
+            {"HOME": str(home)},
+            manager=manager,
+            launcher=launcher,
+        )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            launcher.launches,
+            [
+                (
+                    ["fake-desktop"],
+                    {
+                        "TEACHING_API_KEY": "first-secret",
+                        "CODEX_CLI_PATH": str(binary.resolve()),
+                    },
+                )
+            ],
+        )
+
+    @mock.patch("codex_configure.cli.sys.platform", "linux")
+    def test_dynamic_desktop_prefers_installed_release_over_source_build(self) -> None:
+        temporary, home = self.make_home()
+        self.addCleanup(temporary.cleanup)
+        manager = ConfigManager(home)
+        self.save_profile(manager, "teaching", "first-secret")
+
+        installed = CoreInstaller.versioned_directory(home)
+        installed.mkdir(parents=True)
+        for name in ("codex", "codex-code-mode-host"):
+            path = installed / name
+            path.write_text("#!/bin/sh\n", encoding="utf-8")
+            path.chmod(0o700)
+        (installed.parent / "current").symlink_to(installed.name, target_is_directory=True)
+
+        source = home / ".codex-configure" / "codex-core" / "codex-rs" / "target" / "release"
+        source.mkdir(parents=True)
+        for name in ("codex", "codex-code-mode-host"):
+            path = source / name
+            path.write_text("#!/bin/sh\n", encoding="utf-8")
+            path.chmod(0o700)
+        launcher = FakeLauncher()
+
+        run_run(
+            home,
+            "desktop",
+            Console(io.StringIO(), io.StringIO()),
+            {"HOME": str(home)},
+            manager=manager,
+            launcher=launcher,
+        )
+
+        self.assertEqual(
+            launcher.launches[0][1]["CODEX_CLI_PATH"],
+            str((installed / "codex").resolve()),
+        )
 
     @mock.patch("codex_configure.cli.sys.platform", "linux")
     def test_dynamic_run_rejects_missing_code_mode_host(self) -> None:

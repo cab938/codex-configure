@@ -18,6 +18,7 @@ from .errors import UserFacingError
 
 
 DEFAULT_DESTINATION = Path("~/.codex-configure/codex-core")
+RELEASE_BINARY = Path("codex-rs/target/release/codex")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 _VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 _RUSTC_RE = re.compile(r"^rustc ([0-9]+\.[0-9]+\.[0-9]+)(?:[ -]|$)")
@@ -249,6 +250,11 @@ class CodexPatcher:
         base = Path(home).expanduser() if home is not None else Path.home()
         return (base / DEFAULT_DESTINATION.relative_to("~")).resolve()
 
+    @classmethod
+    def default_binary(cls, home: Path | None = None) -> Path:
+        """Return the patched Core path produced by the default build."""
+        return cls.default_destination(home) / RELEASE_BINARY
+
     def patch(self, destination: Path | str | None = None) -> PatchResult:
         resources = self.resources or PatchResources.discover()
         resources.validate()
@@ -282,8 +288,8 @@ class CodexPatcher:
             self._pin_checkout(worktree, resources)
             self._apply_patch(worktree, resources)
 
-        release_dir = worktree / "codex-rs" / "target" / "release"
-        binary_path = release_dir / "codex"
+        binary_path = worktree / RELEASE_BINARY
+        release_dir = binary_path.parent
         code_mode_host_path = release_dir / "codex-code-mode-host"
         self._build(worktree, resources)
         self._verify_binaries(binary_path, code_mode_host_path, worktree)
@@ -401,6 +407,11 @@ class CodexPatcher:
             raise UserFacingError(f"Core checkout is missing Cargo manifest: {manifest}")
         self._check_rust_version(resources)
         v8_environment = self._resolve_v8_environment(worktree)
+        build_environment = {
+            **v8_environment,
+            "CARGO_PROFILE_RELEASE_DEBUG": "none",
+            "CARGO_PROFILE_RELEASE_STRIP": "symbols",
+        }
         self._checked(
             (
                 "cargo",
@@ -414,7 +425,7 @@ class CodexPatcher:
                 "codex-code-mode-host",
             ),
             cwd=worktree,
-            environment=v8_environment,
+            environment=build_environment,
         )
 
     def _resolve_v8_environment(self, worktree: Path) -> dict[str, str]:

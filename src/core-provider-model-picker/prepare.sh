@@ -105,7 +105,12 @@ from scripts.codex_package.v8 import resolve_codex_v8_cargo_env
 
 if target not in TARGET_SPECS:
     raise SystemExit(f"unsupported Codex package target: {target}")
-environment = {**os.environ, **resolve_codex_v8_cargo_env(TARGET_SPECS[target])}
+environment = {
+    **os.environ,
+    **resolve_codex_v8_cargo_env(TARGET_SPECS[target]),
+    "CARGO_PROFILE_RELEASE_DEBUG": "none",
+    "CARGO_PROFILE_RELEASE_STRIP": "symbols",
+}
 subprocess.run(
     [
         "cargo", "build", "--release", "--manifest-path",
