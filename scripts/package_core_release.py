@@ -18,6 +18,10 @@ from pathlib import Path
 EXECUTABLES = ("codex", "codex-code-mode-host")
 TARGET = "linux-x86_64"
 MINIMUM_GLIBC = "2.35"
+TARGET_METADATA = {
+    TARGET: {"minimum_glibc": MINIMUM_GLIBC},
+    "macos-arm64": {},
+}
 _VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 
@@ -68,7 +72,7 @@ def build_archive(
 ) -> tuple[Path, Path]:
     if not _VERSION_RE.fullmatch(version):
         raise ValueError(f"invalid release version: {version}")
-    if target != TARGET:
+    if target not in TARGET_METADATA:
         raise ValueError(f"unsupported release target: {target}")
     if not _COMMIT_RE.fullmatch(upstream_commit):
         raise ValueError("upstream commit must be a lowercase 40-character SHA")
@@ -88,13 +92,13 @@ def build_archive(
         "schema_version": 1,
         "package_version": version,
         "target": target,
-        "minimum_glibc": MINIMUM_GLIBC,
         "upstream_commit": upstream_commit,
         "patch_sha256": file_sha256(patch_file),
         "files": {
             name: {"sha256": file_sha256(path), "size": path.stat().st_size}
             for name, path in binaries.items()
         },
+        **TARGET_METADATA[target],
     }
     manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
@@ -129,7 +133,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--release-dir", required=True, type=Path)
     result.add_argument("--output-dir", required=True, type=Path)
     result.add_argument("--version", required=True)
-    result.add_argument("--target", default=TARGET)
+    result.add_argument("--target", default=TARGET, choices=sorted(TARGET_METADATA))
     result.add_argument("--upstream-commit", required=True)
     result.add_argument("--patch-file", required=True, type=Path)
     result.add_argument("--license-file", required=True, type=Path)
