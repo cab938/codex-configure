@@ -21,7 +21,6 @@ from .launch_context import (
     initialize_root,
     launch_chrome,
     load_launch_context,
-    load_launch_settings,
     local_state,
     rooted_environment,
     write_launch_configuration,
@@ -903,12 +902,12 @@ def run_status(cwd: Path, user_home: Path, console: Console) -> int:
     launch_file = global_state / "launch.toml"
     if launch_file.exists():
         try:
-            settings = load_launch_settings(global_state)
+            context = load_launch_context(global_state)
         except UserFacingError as exc:
             console.write(f"  Launch mode: invalid ({exc})")
             status = 2
         else:
-            console.write(f"  Launch mode: {settings.description}")
+            console.write(f"  Launch mode: {context.settings.description}")
     else:
         console.write("  Launch mode: not configured")
     console.write(f"  Dynamic Core: {_dynamic_core_summary(user_home)}")

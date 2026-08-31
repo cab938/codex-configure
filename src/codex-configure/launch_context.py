@@ -152,11 +152,13 @@ def initialize_root(root: Path) -> LaunchContext:
     for directory in (
         state_dir,
         state_dir / "codex-home",
+        state_dir / "xdg",
         state_dir / "xdg" / "config",
         state_dir / "xdg" / "data",
         state_dir / "xdg" / "state",
         state_dir / "xdg" / "cache",
         state_dir / "electron-user-data",
+        state_dir / "chrome",
         state_dir / "chrome" / "home",
         state_dir / "chrome" / "profile",
     ):

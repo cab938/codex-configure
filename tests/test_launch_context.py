@@ -57,6 +57,8 @@ class LaunchRootTests(unittest.TestCase):
                 stat.S_IMODE((context.state_dir / "launch.sh").stat().st_mode),
                 0o700,
             )
+            self.assertEqual(stat.S_IMODE((context.state_dir / "xdg").stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE((context.state_dir / "chrome").stat().st_mode), 0o700)
 
     def test_init_can_create_an_openai_only_launch_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -98,6 +100,27 @@ class LaunchRootTests(unittest.TestCase):
             self.assertFalse((home / ".codex-configure").exists())
             self.assertIn("Local launch root", output.getvalue())
             self.assertIn("Global configuration", output.getvalue())
+
+    def test_status_rejects_incomplete_global_launch_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            cwd = base / "project"
+            home = base / "home"
+            global_state = home / ".codex-configure"
+            cwd.mkdir()
+            global_state.mkdir(parents=True)
+            (global_state / "launch.toml").write_text(
+                'schema_version = 1\nkind = "codex-configure-launch"\n'
+                '[launch]\ncore = "stock"\nprovider = "openai"\n',
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+
+            result = run_status(cwd, home, Console(io.StringIO(), output))
+
+            self.assertEqual(result, 2)
+            self.assertIn("Launch mode: invalid", output.getvalue())
+            self.assertIn("does not declare context.codex_home", output.getvalue())
 
     @mock.patch("codex_configure.cli.os.execv")
     def test_launch_execs_exact_local_script_and_forwards_arguments(self, execv: mock.Mock) -> None:

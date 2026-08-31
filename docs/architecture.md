@@ -57,6 +57,8 @@ ROOT/.codex-configure/
 
 The caller's `PWD` remains the task workspace. Runtime sockets and temporary files use a short private path under `/run/user/$UID/codex-configure/<root-hash>/`, falling back to `/tmp/codex-configure-$UID/<root-hash>/`. This is configuration, identity, and binary isolation rather than a security boundary.
 
+A launch root starts with an empty Codex home and isolated desktop state. It never copies authentication, tasks, settings, skills, or plugins from `~/.codex`; the user signs into and configures each root independently.
+
 Within either the global or rooted Codex home, the tool adds one managed subtree:
 
 ```text

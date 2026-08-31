@@ -7,9 +7,9 @@ There are two ways to use it:
 - **Per-launch Profiles** works with the stock Codex CLI and stock desktop app on macOS and Linux. Choose one provider when you launch.
 - **Dynamic Picker** uses a patched Codex Core on Linux or an Apple Silicon Mac. OpenAI and every configured U-M profile appear together in the desktop and CLI model picker.
 
-Both modes preserve the OpenAI sign-in, tasks, settings, skills, and plugins belonging to the selected `CODEX_HOME`. A launch root intentionally gets its own persistent Codex home.
+Both modes preserve the OpenAI sign-in, tasks, settings, skills, and plugins belonging to the selected `CODEX_HOME`. A launch root intentionally gets its own persistent Codex home; it does not copy identity or state from `~/.codex`.
 
-> **Important:** Every `codex-configure launch` or `codex-configure run` command writes the selected active configuration to that launch context's `$CODEX_HOME/config.toml` before launching Codex. This is a persistent change to the file, not a process-local override. Bare `codex-configure` is strictly read-only: it reports status and never initializes or launches anything.
+> **Important:** Codex launches through `codex-configure launch` or `codex-configure run` write the selected active configuration to that launch context's `$CODEX_HOME/config.toml` before launching. This is a persistent change to the file, not a process-local override. The `launch chrome` target does not change Codex configuration. Bare `codex-configure` is strictly read-only: it reports status and never initializes or launches anything.
 
 ## Install
 
@@ -17,10 +17,9 @@ All users need:
 
 - Python 3.11 or newer;
 - [pipx](https://pipx.pypa.io/latest/how-to/install-pipx.html);
-- the [Codex CLI](https://learn.chatgpt.com/docs/codex/cli), signed in with ChatGPT; and
-- the ChatGPT desktop app, signed in with the same account.
+- the [Codex CLI](https://learn.chatgpt.com/docs/codex/cli).
 
-Linux users can follow the [ChatGPT Linux installation guide](https://learn.chatgpt.com/docs/linux/linux-app). macOS users can install the ChatGPT app from the [OpenAI desktop page](https://openai.com/chatgpt/desktop/). Fully quit both clients before changing an active profile.
+Install the ChatGPT desktop app only if you want the `desktop` target. Linux users can follow the [ChatGPT Linux installation guide](https://learn.chatgpt.com/docs/linux/linux-app). macOS users can install the app from the [OpenAI desktop page](https://openai.com/chatgpt/desktop/).
 
 Install `codex-configure` from PyPI:
 
@@ -31,6 +30,8 @@ pipx install codex-configure
 `pipx` creates an isolated environment and exposes the `codex-configure` command. If the command is not found after installation, run `pipx ensurepath` and open a new terminal. To install a source checkout instead, run `pipx install .` from the repository root.
 
 On macOS, install Python and pipx first if they are unavailable. Homebrew users can run `brew install python pipx`.
+
+OpenAI authentication belongs to the selected `CODEX_HOME`. Global setup at `~/.codex` reuses that home's existing sign-in. A new launch root starts with separate authentication and desktop state. After `init`, sign in once with `codex-configure launch cli login`; the isolated desktop profile may also prompt on its first launch. If the root's default is Dynamic Picker, install the Dynamic Core with `codex-configure setup dynamic` before that login command.
 
 ## Everyday Commands
 
@@ -48,7 +49,7 @@ Specific launch targets and their remaining arguments pass through the generated
 codex-configure launch desktop
 codex-configure launch cli
 codex-configure launch cli login
-codex-configure launch chrome
+codex-configure launch chrome          # launch roots only
 ```
 
 From an initialized launch root, `launch` uses the exact current directory's `.codex-configure/launch.sh`. It never searches parent directories. If the current directory has no `.codex-configure`, it uses the configured global launcher at `~/.codex-configure/launch.sh`. A local `.codex-configure` that is not a valid root is an error rather than a reason to silently fall back globally.
@@ -85,6 +86,7 @@ A launch root keeps persistent Codex and application state below the selected di
 
 ```text
 ROOT/.codex-configure/
+|-- .gitignore                        # keeps the generated root out of Git
 |-- root.toml                         # recognized-root marker
 |-- launch.toml                       # default Core and provider
 |-- launch.sh                         # generated pass-through launcher
@@ -97,14 +99,14 @@ ROOT/.codex-configure/
     `-- chrome-native-hosts-v2.json
 ```
 
-Short-lived socket and temporary paths use `/run/user/$UID/codex-configure/<root-id>/` when available, with a private `/tmp` fallback. This is configuration and binary isolation, not a hard filesystem or security boundary. `launch chrome` starts Chrome or Chromium with the root's isolated browser home and profile; it does not claim full browser/native-host integration on every Codex Desktop build.
+Short-lived socket and temporary paths use `/run/user/$UID/codex-configure/<root-id>/` when available, with a private `/tmp` fallback. This is configuration and binary isolation, not a hard filesystem or security boundary. Each launch root must be initialized and signed in independently. `launch chrome` starts Chrome or Chromium with the root's isolated browser home and profile; it does not claim full browser/native-host integration on every Codex Desktop build.
 
 ## Per-launch Profiles
 
 Per-launch profiles work on macOS and Linux without changing Codex Core. The provider and target are written as `provider/app`:
 
 ```bash
-# Existing OpenAI sign-in, stock Core
+# The selected CODEX_HOME's OpenAI sign-in, stock Core
 codex-configure run openai/cli
 codex-configure run openai/desktop
 
@@ -148,7 +150,7 @@ codex-configure launch cli
 
 Dynamic launches do not require existing Codex clients to stop because they keep the shared base configuration and route each task through the patched Core. An already-running Desktop process still retains the environment from its first launch: if it was started with stock Core, close it once and restart it with `codex-configure launch desktop` before relying on Dynamic Picker.
 
-On macOS, `run desktop` launches the executable inside `ChatGPT.app` with the installed native Core in `CODEX_CLI_PATH`. This integration hook is experimental: record the ChatGPT version and report any launch, sign-in, picker, or security-policy failure rather than changing managed security settings.
+On macOS, a Dynamic Picker desktop launch starts the executable inside `ChatGPT.app` with the installed native Core in `CODEX_CLI_PATH`. This integration hook is experimental: record the ChatGPT version and report any launch, sign-in, picker, or security-policy failure rather than changing managed security settings.
 
 To build from source instead, install Git plus Rust 1.94 or newer from [rustup](https://rustup.rs/), with `cargo` on `PATH`, and run:
 
@@ -221,7 +223,7 @@ codex-configure restore
 codex-configure restore --original
 ```
 
-Named stock-profile switching and restore commands refuse to proceed while a known Codex or ChatGPT process is running. They also reject unexpected outside changes to routing fields instead of overwriting them. Unrelated settings written by Codex are retained.
+Named stock-profile switching, stock OpenAI selection, and restore commands refuse to proceed while a known Codex or ChatGPT process is running. Dynamic Picker launches do not require all clients to stop, although an already-running desktop process keeps the environment with which it started. Profile changes also reject unexpected outside edits to routing fields instead of overwriting them. Unrelated settings written by Codex are retained.
 
 ## Troubleshooting
 
