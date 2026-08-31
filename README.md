@@ -5,7 +5,7 @@
 There are two ways to use it:
 
 - **Per-launch Profiles** works with the stock Codex CLI and stock desktop app on macOS and Linux. Choose one provider when you launch.
-- **Dynamic Picker** uses a patched Codex Core on Linux. OpenAI and every configured U-M profile appear together in the desktop and CLI model picker.
+- **Dynamic Picker** uses a patched Codex Core on Linux or an Apple Silicon Mac. OpenAI and every configured U-M profile appear together in the desktop and CLI model picker.
 
 Both modes preserve the existing OpenAI sign-in and share the same tasks, settings, skills, and plugins in `CODEX_HOME`.
 
@@ -73,7 +73,7 @@ On macOS, `codex-configure` launches the executable inside `ChatGPT.app` so the 
 
 ## Dynamic Picker
 
-Dynamic Picker is a research feature currently supported and tested on Linux x86_64 with glibc 2.35 or newer (the Ubuntu 22.04 baseline). It keeps the stock desktop renderer and patches the open-source Codex Core used behind it.
+Dynamic Picker is a research feature. It is acceptance-tested on Linux x86_64 with glibc 2.35 or newer (the Ubuntu 22.04 baseline), and an experimental native build is available for Apple Silicon Macs. The macOS path is intentionally available for real Desktop testing but is not yet a validated compatibility claim. Both paths keep the stock desktop renderer and patch the open-source Codex Core used behind it.
 
 Install the matching prebuilt Core release with one command:
 
@@ -87,7 +87,7 @@ For a new machine, the package and Core can be installed together:
 pipx install codex-configure && codex-configure setup dynamic
 ```
 
-The setup command downloads the Linux x86_64 asset for the installed `codex-configure` version, verifies the release checksum plus its pinned-patch manifest, and installs it under `~/.codex-configure/cores/codex-configure-core-<version>-linux-x86_64/`. An atomic `~/.codex-configure/cores/current` link selects the active version; older versioned installations remain available for rollback by reinstalling the matching Python package version and rerunning setup. No Git or Rust installation is required for this path.
+The setup command selects the Linux x86_64 or macOS arm64 asset for the current machine, verifies the release checksum plus its pinned-patch manifest, and installs it under `~/.codex-configure/cores/codex-configure-core-<version>-<target>/`. An atomic `~/.codex-configure/cores/current` link selects the active version; older versioned installations remain available for rollback by reinstalling the matching Python package version and rerunning setup. No Git or Rust installation is required for this path.
 
 The installed Core is discovered automatically. No shell export is needed:
 
@@ -96,6 +96,10 @@ codex-configure run desktop
 # or
 codex-configure run cli
 ```
+
+Dynamic launches do not require existing Codex clients to stop because they keep the shared base configuration and route each task through the patched Core. An already-running Desktop process still retains the environment from its first launch: if it was started with stock Core, close it once and restart it with `codex-configure run desktop` before relying on Dynamic Picker.
+
+On macOS, `run desktop` launches the executable inside `ChatGPT.app` with the installed native Core in `CODEX_CLI_PATH`. This integration hook is experimental: record the ChatGPT version and report any launch, sign-in, picker, or security-policy failure rather than changing managed security settings.
 
 To build from source instead, install Git plus Rust 1.94 or newer from [rustup](https://rustup.rs/), with `cargo` on `PATH`, and run:
 
@@ -168,7 +172,7 @@ codex-configure restore
 codex-configure restore --original
 ```
 
-Switching and restore commands refuse to proceed while a known Codex or ChatGPT process is running. They also reject unexpected outside changes to routing fields instead of overwriting them. Unrelated settings written by Codex are retained.
+Named stock-profile switching and restore commands refuse to proceed while a known Codex or ChatGPT process is running. They also reject unexpected outside changes to routing fields instead of overwriting them. Unrelated settings written by Codex are retained.
 
 ## Troubleshooting
 

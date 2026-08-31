@@ -48,23 +48,28 @@ jobs:
           if actual != expected:
               raise SystemExit(f"release tag {actual!r} must be {expected!r}")
           PY
-      - name: Verify Linux Dynamic Core release assets
+      - name: Verify Dynamic Core release assets
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           version=${RELEASE_TAG#v}
-          asset="codex-configure-core-${version}-linux-x86_64.tar.gz"
           mkdir core-assets
-          gh release download "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern "$asset" \
-            --pattern "$asset.sha256" \
-            --dir core-assets
+          for target in linux-x86_64 macos-arm64; do
+            asset="codex-configure-core-${version}-${target}.tar.gz"
+            gh release download "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern "$asset" \
+              --pattern "$asset.sha256" \
+              --dir core-assets
+          done
           cd core-assets
-          test -f "$asset"
-          test -f "$asset.sha256"
-          sha256sum --check "$asset.sha256"
+          for target in linux-x86_64 macos-arm64; do
+            asset="codex-configure-core-${version}-${target}.tar.gz"
+            test -f "$asset"
+            test -f "$asset.sha256"
+            sha256sum --check "$asset.sha256"
+          done
       - name: Store distributions
         uses: actions/upload-artifact@v5
         with:

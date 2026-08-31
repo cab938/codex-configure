@@ -1,6 +1,6 @@
 # Architecture
 
-This document records the durable design, patch-maintenance boundary, and Linux acceptance procedure for `codex-configure`. Installation and ordinary commands belong in the project [README](../README.md).
+This document records the durable design, patch-maintenance boundary, and platform acceptance procedures for `codex-configure`. Installation and ordinary commands belong in the project [README](../README.md).
 
 ## Scope
 
@@ -17,7 +17,7 @@ It deliberately provides two operating modes.
 | `run name/cli` or `run name/desktop` | Stock | Named U-M service fixed for that launch |
 | `run cli` or `run desktop` | Patched | Qualified provider/model in the existing picker |
 
-Per-launch profiles support macOS and Linux. Dynamic Picker is supported and acceptance-tested on Linux x86_64 with the Ubuntu 22.04 / glibc 2.35 baseline only.
+Per-launch profiles support macOS and Linux. Dynamic Picker is acceptance-tested on Linux x86_64 with the Ubuntu 22.04 / glibc 2.35 baseline. Native macOS arm64 installation and launch are available as an experimental path pending the same real-Desktop acceptance boundary.
 
 ## System Boundary
 
@@ -35,7 +35,7 @@ Codex App Server / Core task
 
 The execution host, working directory, sandbox, approvals, collaboration mode, and task identity are independent of the selected model provider.
 
-The desktop renderer is not patched. `CODEX_CLI_PATH` tells a compatible Linux desktop package which Codex CLI/App Server executable to start. This hook was observed in the official and community-packaged Linux applications, but it is not a documented stable OpenAI interface and must be retested after desktop updates.
+The desktop renderer is not patched. `CODEX_CLI_PATH` tells a compatible desktop package which Codex CLI/App Server executable to start. This hook was observed in Linux applications and is the experimental handoff under test on macOS; it is not a documented stable OpenAI interface and must be retested after desktop updates.
 
 ## Runtime Layout
 
@@ -69,13 +69,13 @@ Prebuilt Dynamic Core releases live outside `CODEX_HOME` so custom Codex homes s
 
 ```text
 ~/.codex-configure/cores/
-|-- codex-configure-core-<version>-linux-x86_64/
+|-- codex-configure-core-<version>-<target>/
 |   |-- codex
 |   |-- codex-code-mode-host
 |   |-- manifest.json
 |   |-- LICENSE
 |   `-- NOTICE
-`-- current -> codex-configure-core-<version>-linux-x86_64
+`-- current -> codex-configure-core-<version>-<target>
 ```
 
 Installations are immutable by convention and versioned for rollback. Runtime accepts `current` only when it selects the installed Python package's version; rollback therefore means installing the matching earlier Python package and rerunning setup. `setup dynamic` verifies a release SHA-256 sidecar, a manifest tied to the installed Python package's upstream pin and patch hash, and both executable hashes before atomically replacing the `current` symlink. It rejects unexpected archive members, links, special files, and unsafe paths. The release checksum detects corruption but is distributed with the asset and is not an independent signature.
@@ -152,18 +152,20 @@ The picker displays and returns the same qualified value, for example `teaching:
 
 A user may change provider between completed turns without forking. Provider transport, authentication, sticky-routing state, and prompt-cache state are turn-scoped and rebuilt for the selected provider. Provider reasoning items can contain opaque state another provider cannot validate, so they are removed at a provider boundary while user, assistant, and tool history remain. Resume reconstructs the same boundaries from persisted settings.
 
-## Linux Core Release
+## Dynamic Core Release
 
-The Linux binary and Python package share a version. Release preparation is intentionally two-stage so PyPI never points users at an absent Core asset:
+The native binaries and Python package share a version. Release preparation is intentionally two-stage so PyPI never points users at an absent Core asset:
 
 1. Bump the package version and complete the patch refresh and targeted checks.
 2. Push the version tag and create a GitHub draft release for that tag.
-3. Manually run the `Build Linux Dynamic Core` workflow with the draft tag. It checks out that tag, builds stripped release executables on `ubuntu-22.04`, creates the versioned archive and checksum, and uploads both to the draft without replacing an existing asset.
-4. Inspect the workflow result, use authenticated `gh release download` to retrieve the draft assets, verify the checksum, and run the Linux VM acceptance against the unpacked candidate.
-5. Publish the draft release. The `Publish to PyPI` workflow downloads and verifies the required Linux asset checksum before publishing the wheel and source distribution through PyPI Trusted Publishing.
-6. On a clean compatible Linux account, run the documented `pipx install codex-configure && codex-configure setup dynamic` path as a public-download smoke check.
+3. Manually run both `Build Linux Dynamic Core` and `Build macOS Dynamic Core` with the draft tag. They check out that tag, build native release executables, create target-specific archives and checksums, and upload them to the draft without replacing an existing asset.
+4. Inspect both workflow results, retrieve the draft assets, verify their checksums, and run the applicable platform acceptance against the candidates.
+5. Publish the draft release. The `Publish to PyPI` workflow downloads and verifies both required target assets before publishing the wheel and source distribution through PyPI Trusted Publishing.
+6. On clean compatible accounts, run the documented `pipx install codex-configure && codex-configure setup dynamic` path as a public-download smoke check.
 
 Keeping draft publication as the human gate prevents an uninspected binary build from publishing the Python installer. A failed or repeated binary workflow leaves the draft unpublished and does not overwrite existing assets.
+
+GitHub Actions artifacts remain temporary CI evidence. The copies attached to a published GitHub release are the durable user downloads and do not use the workflow artifact retention period.
 
 ## Patch Refresh
 
@@ -193,6 +195,17 @@ This is an agent-invoked release check, not CI. Use a dedicated Linux VM account
 
 The automated canary is the fast regression signal. Desktop acceptance is intentionally one bounded visual pass because picker rendering and the `CODEX_CLI_PATH` handoff cannot be proven by a Core build alone.
 
+## Manual macOS Apple Silicon Acceptance
+
+Use an Apple Silicon Mac with the ChatGPT desktop app and a testable U-M Toolkit allocation. On a managed Mac, stop and report any policy block rather than disabling security controls.
+
+1. Confirm `uname -m` reports `arm64`, record `sw_vers`, and fully quit ChatGPT.
+2. Install the candidate package, run `codex-configure setup dynamic`, and confirm it installs a verified `macos-arm64` Core without Git or Rust.
+3. Run `codex-configure init` with the tester's own Toolkit key. Confirm the key is absent from `config.toml`, catalogs, and command output.
+4. Run `codex-configure run desktop`. Confirm ChatGPT remains signed in and the picker shows qualified OpenAI and named U-M entries.
+5. Complete one turn with OpenAI, switch to the named U-M provider for another turn, return to OpenAI, restart ChatGPT through `codex-configure run desktop`, and resume the same task.
+6. Report the package version, ChatGPT version, picker result, turn results, and any launch or managed-security error. Do not send keys, `auth.json`, or the protected `.env` file.
+
 ## Prior Acceptance Evidence
 
 The original Linux spike demonstrated a stock desktop loading the patched Core through `CODEX_CLI_PATH`, qualified OpenAI and U-M entries in the real picker, OpenAI to U-M to OpenAI turns in one task, and restart/resume restoration. That run also exposed the provider-reasoning boundary that the final patch now handles.
@@ -210,4 +223,4 @@ A Desktop `GET /backend-api/accounts/.../settings` 401 with `Must use workspace 
 - Keep keys in one protected tool-owned file rather than a keychain or `auth.json`.
 - Preserve and recover `config.toml` transactionally.
 - Pin and rebuild the smallest maintainable Core patch instead of vendoring Codex.
-- Claim Dynamic Picker support on Linux x86_64 with the Ubuntu 22.04 / glibc 2.35 baseline only until another platform passes the same acceptance boundary.
+- Keep the validated Dynamic Picker claim on Linux x86_64 with the Ubuntu 22.04 / glibc 2.35 baseline; expose macOS arm64 as experimental until it passes the same acceptance boundary.

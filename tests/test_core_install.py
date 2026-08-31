@@ -25,6 +25,7 @@ class CoreInstallerTests(unittest.TestCase):
         root: Path,
         *,
         version: str = "0.3.0",
+        target: str = "linux-x86_64",
         upstream_commit: str | None = None,
     ) -> tuple[Path, Path, dict[str, bytes]]:
         release_directory = root / "release-bin"
@@ -44,7 +45,7 @@ class CoreInstallerTests(unittest.TestCase):
             release_directory=release_directory,
             output_directory=assets,
             version=version,
-            target="linux-x86_64",
+            target=target,
             upstream_commit=upstream_commit or resources.upstream_commit,
             patch_file=resources.patch_file,
             license_file=REPOSITORY_ROOT / "LICENSE",
@@ -112,6 +113,30 @@ class CoreInstallerTests(unittest.TestCase):
             installed = home / ".codex-configure" / "cores" / installer.asset_stem
             self.assertFalse(installed.exists())
 
+    def test_installs_macos_arm64_release(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, _, contents = self.make_release(root, target="macos-arm64")
+            home = root / "home"
+            installer = CoreInstaller(
+                home=home,
+                version="0.3.0",
+                release_base_url=(root / "releases").as_uri(),
+                platform_name="Darwin",
+                machine="arm64",
+            )
+
+            result = installer.install()
+
+            self.assertEqual(result.target, "macos-arm64")
+            self.assertEqual(result.binary_path.read_bytes(), contents["codex"])
+            self.assertEqual(
+                result.install_directory,
+                CoreInstaller.versioned_directory(home, "0.3.0", "macos-arm64"),
+            )
+            manifest = (result.install_directory / "manifest.json").read_text(encoding="utf-8")
+            self.assertNotIn("minimum_glibc", manifest)
+
     def test_rejects_manifest_for_a_different_upstream_pin(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -134,9 +159,9 @@ class CoreInstallerTests(unittest.TestCase):
             installer = CoreInstaller(
                 home=Path(temporary),
                 platform_name="Darwin",
-                machine="arm64",
+                machine="x86_64",
             )
-            with self.assertRaisesRegex(UserFacingError, "Linux x86_64"):
+            with self.assertRaisesRegex(UserFacingError, "macOS Apple Silicon"):
                 installer.install()
 
 
