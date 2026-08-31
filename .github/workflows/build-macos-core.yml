@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Optional existing draft release tag, for example v0.4.0; leave blank for a test artifact
+        description: Optional existing draft release tag, for example v0.5.0; leave blank for a test artifact
         required: false
         type: string
 

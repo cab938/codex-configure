@@ -23,7 +23,7 @@ from .patcher import PatchResources
 
 
 RELEASE_BASE_URL = "https://github.com/cab938/codex-configure/releases/download"
-CORES_DIRECTORY = Path("~/.codex-configure/cores")
+CORES_DIRECTORY = Path(".codex-configure/cores")
 TARGET = "linux-x86_64"
 MACOS_TARGET = "macos-arm64"
 SUPPORTED_TARGETS = {TARGET, MACOS_TARGET}
@@ -76,7 +76,7 @@ class CoreInstaller:
     @staticmethod
     def default_root(home: Path | None = None) -> Path:
         base = Path(home).expanduser() if home is not None else Path.home()
-        return (base / CORES_DIRECTORY.relative_to("~")).absolute()
+        return (base / CORES_DIRECTORY).absolute()
 
     @classmethod
     def current_binary(cls, home: Path | None = None) -> Path:

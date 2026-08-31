@@ -146,7 +146,7 @@ class CliFlowTests(unittest.TestCase):
 
         result = run_init(
             home,
-            Console(io.StringIO("2\nteaching\ntest-secret\nall\n\n"), output),
+            Console(io.StringIO("2\nteaching\ntest-secret\nall\n\n4\n"), output),
             {},
             catalog_service=service,
         )
@@ -197,6 +197,36 @@ class CliFlowTests(unittest.TestCase):
             self.assertTrue((manager.paths.providers / f"{shortname}.toml").is_file())
             self.assertTrue((manager.paths.catalogs / f"{shortname}.json").is_file())
 
+    def test_init_repeats_until_two_named_profiles_are_ready(self) -> None:
+        temporary, home = self.make_home()
+        self.addCleanup(temporary.cleanup)
+        service = FakeCatalogService()
+        output = io.StringIO()
+
+        result = run_init(
+            home,
+            Console(
+                io.StringIO(
+                    "2\nteaching\nfirst-secret\nall\n\n"
+                    "3\nresearch\nsecond-secret\nall\n\n"
+                    "5\n"
+                ),
+                output,
+            ),
+            {},
+            catalog_service=service,
+        )
+
+        manager = ConfigManager(home)
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            [item.id for item in manager.list_providers(include_stock=False)],
+            ["research", "teaching"],
+        )
+        self.assertEqual(service.api_keys, ["first-secret", "second-secret"])
+        self.assertIn("research (U-M GPT Toolkit", output.getvalue())
+        self.assertIn("teaching (U-M GPT Toolkit", output.getvalue())
+
     def test_init_all_excludes_endpoint_models_without_codex_metadata(self) -> None:
         temporary, home = self.make_home()
         self.addCleanup(temporary.cleanup)
@@ -212,7 +242,7 @@ class CliFlowTests(unittest.TestCase):
 
         run_init(
             home,
-            Console(io.StringIO("2\nsandbox\ntest-secret\nall\n\n"), output),
+            Console(io.StringIO("2\nsandbox\ntest-secret\nall\n\n4\n"), output),
             {},
             catalog_service=service,
         )
@@ -377,6 +407,7 @@ class CliFlowTests(unittest.TestCase):
             {"HOME": str(home)},
             manager=manager,
             launcher=launcher,
+            core_home=home,
         )
 
         self.assertEqual(
@@ -395,11 +426,40 @@ class CliFlowTests(unittest.TestCase):
         )
         output = io.StringIO()
 
-        result = run_setup_dynamic(Console(io.StringIO(), output), {}, installer=installer)
+        result = run_setup_dynamic(
+            Console(io.StringIO(), output),
+            {},
+            core_home=Path("/tmp/project-root"),
+            installer=installer,
+        )
 
         self.assertEqual(result, 0)
         installer.install.assert_called_once_with()
         self.assertIn("Installed Dynamic Core 0.4.0 for macos-arm64", output.getvalue())
+
+    @mock.patch("codex_configure.core_install.CoreInstaller")
+    def test_setup_dynamic_constructs_a_project_local_installer(
+        self,
+        installer_class: mock.Mock,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "project"
+            root.mkdir()
+            installer_class.return_value.install.return_value = mock.Mock(
+                reused=False,
+                version="0.4.0",
+                target="linux-x86_64",
+                install_directory=root / ".codex-configure" / "cores" / "test",
+            )
+
+            result = run_setup_dynamic(
+                Console(io.StringIO(), io.StringIO()),
+                {},
+                core_home=root,
+            )
+
+            self.assertEqual(result, 0)
+            installer_class.assert_called_once_with(home=root.resolve())
 
     @mock.patch("codex_configure.cli.sys.platform", "linux")
     def test_dynamic_desktop_finds_default_build_without_environment_override(self) -> None:
@@ -426,6 +486,7 @@ class CliFlowTests(unittest.TestCase):
             {"HOME": str(home)},
             manager=manager,
             launcher=launcher,
+            core_home=home,
         )
 
         self.assertEqual(result, 0)
@@ -472,6 +533,7 @@ class CliFlowTests(unittest.TestCase):
             {"HOME": str(home)},
             manager=manager,
             launcher=launcher,
+            core_home=home,
         )
 
         self.assertEqual(

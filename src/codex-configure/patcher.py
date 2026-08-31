@@ -17,7 +17,7 @@ from typing import Mapping, Protocol, Sequence, TextIO
 from .errors import UserFacingError
 
 
-DEFAULT_DESTINATION = Path("~/.codex-configure/codex-core")
+DEFAULT_DESTINATION = Path(".codex-configure/codex-core")
 RELEASE_BINARY = Path("codex-rs/target/release/codex")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 _VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
@@ -248,7 +248,7 @@ class CodexPatcher:
     @staticmethod
     def default_destination(home: Path | None = None) -> Path:
         base = Path(home).expanduser() if home is not None else Path.home()
-        return (base / DEFAULT_DESTINATION.relative_to("~")).resolve()
+        return (base / DEFAULT_DESTINATION).resolve()
 
     @classmethod
     def default_binary(cls, home: Path | None = None) -> Path:

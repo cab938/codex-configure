@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -20,6 +23,7 @@ SCHEMA_VERSION = 1
 ROOT_KIND = "codex-configure-launch-root"
 LAUNCH_KIND = "codex-configure-launch"
 STATE_DIRECTORY = ".codex-configure"
+MAX_AUTH_FILE_BYTES = 16 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -44,10 +48,6 @@ class LaunchContext:
     @property
     def launcher(self) -> Path:
         return self.state_dir / "launch.sh"
-
-
-def default_global_state(home: Path) -> Path:
-    return home / STATE_DIRECTORY
 
 
 def local_state(cwd: Path) -> Path:
@@ -136,6 +136,79 @@ def _write_managed(path: Path, text: str, mode: int) -> None:
     temporary.write_text(text, encoding="utf-8")
     temporary.chmod(mode)
     temporary.replace(path)
+
+
+def copy_openai_auth(source_home: Path, target_home: Path) -> Path:
+    """Copy only Codex-owned OpenAI authentication into a fresh launch root."""
+
+    source = source_home.expanduser().resolve() / "auth.json"
+    target_home = target_home.expanduser().resolve()
+    destination = target_home / "auth.json"
+    if source.is_symlink():
+        raise UserFacingError(f"Refusing symlinked OpenAI authentication source: {source}")
+    source_descriptor = -1
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        source_descriptor = os.open(source, flags)
+        source_stat = os.fstat(source_descriptor)
+    except FileNotFoundError as exc:
+        raise UserFacingError(f"OpenAI authentication was not found at {source}.") from exc
+    except OSError as exc:
+        if source_descriptor >= 0:
+            os.close(source_descriptor)
+        raise UserFacingError(f"Could not inspect OpenAI authentication at {source}: {exc}") from exc
+    if not stat.S_ISREG(source_stat.st_mode):
+        os.close(source_descriptor)
+        raise UserFacingError(f"OpenAI authentication source is not a regular file: {source}")
+    try:
+        with os.fdopen(source_descriptor, "rb") as source_file:
+            source_descriptor = -1
+            payload = source_file.read(MAX_AUTH_FILE_BYTES + 1)
+    except OSError as exc:
+        raise UserFacingError(f"Could not read OpenAI authentication at {source}: {exc}") from exc
+    finally:
+        if source_descriptor >= 0:
+            os.close(source_descriptor)
+    if len(payload) > MAX_AUTH_FILE_BYTES:
+        raise UserFacingError(f"OpenAI authentication file is unexpectedly large: {source}")
+    try:
+        document = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise UserFacingError(f"OpenAI authentication is not valid JSON: {source}") from exc
+    if not isinstance(document, dict):
+        raise UserFacingError(f"OpenAI authentication must contain a JSON object: {source}")
+
+    _ensure_directory(target_home)
+    if destination.exists() or destination.is_symlink():
+        raise UserFacingError(
+            f"OpenAI authentication already exists at {destination}; refusing to overwrite it."
+        )
+
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".auth.json.", dir=target_home)
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as target_file:
+            descriptor = -1
+            target_file.write(payload)
+            target_file.flush()
+            os.fsync(target_file.fileno())
+        try:
+            os.link(temporary, destination, follow_symlinks=False)
+        except FileExistsError as exc:
+            raise UserFacingError(
+                f"OpenAI authentication appeared at {destination}; refusing to overwrite it."
+            ) from exc
+    except OSError as exc:
+        raise UserFacingError(f"Could not copy OpenAI authentication to {destination}: {exc}") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return destination
 
 
 def _launcher_text() -> str:

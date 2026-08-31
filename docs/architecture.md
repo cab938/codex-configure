@@ -4,7 +4,7 @@ This document records the durable design, patch-maintenance boundary, and platfo
 
 ## Scope
 
-`codex-configure` supports one stock provider and any number of named U-M GPT Toolkit services in either the normal `~/.codex` home or a directory-scoped launch root:
+`codex-configure` supports one stock provider and any number of named U-M GPT Toolkit services in a directory-scoped launch root:
 
 - OpenAI uses Codex's existing ChatGPT authentication and bundled model catalog.
 - Each U-M service uses its own Portkey API key, static selected catalog, and short provider name.
@@ -19,7 +19,7 @@ It deliberately provides two operating modes.
 | `run name/cli` or `run name/desktop` | Stock | Named U-M service fixed for that launch |
 | `run cli` or `run desktop` | Patched | Qualified provider/model in the existing picker |
 
-Bare `codex-configure` is a read-only status operation. `init` owns context creation and provider/default-launch configuration. `launch` resolves only the exact current directory: a valid local root wins, an invalid local `.codex-configure` blocks fallback, and an absent local directory permits the global launcher. Per-launch profiles support macOS and Linux. Dynamic Picker is acceptance-tested on Linux x86_64 with the Ubuntu 22.04 / glibc 2.35 baseline. Native macOS arm64 installation and launch are available as an experimental path pending the same real-Desktop acceptance boundary.
+Bare `codex-configure` is a read-only status operation. `init` owns context creation, repeated provider configuration, and Core/default-provider selection. Ordinary commands resolve only the exact current directory: they never search parents or fall back to a normal or legacy global Codex home. The explicit advanced `--codex-home PATH` option can manage a supplied Codex home but never creates a launcher or installs a project Core. Fixed-provider Stock Core launches support macOS and Linux. Dynamic Picker is acceptance-tested on Linux x86_64 with the Ubuntu 22.04 / glibc 2.35 baseline. Native macOS arm64 installation and launch are available as an experimental path pending the same real-Desktop acceptance boundary.
 
 ## System Boundary
 
@@ -50,6 +50,8 @@ ROOT/.codex-configure/
 |-- launch.toml                       # default Core/provider, never credentials
 |-- launch.sh                         # generated dispatcher
 |-- codex-home/                       # context-specific CODEX_HOME
+|-- cores/                            # prebuilt Dynamic Core, when selected
+|-- codex-core/                       # default patched source checkout, when requested
 |-- xdg/{config,data,state,cache}/
 |-- electron-user-data/
 `-- chrome/{home,profile,chrome-native-hosts-v2.json}
@@ -57,13 +59,13 @@ ROOT/.codex-configure/
 
 The caller's `PWD` remains the task workspace. Runtime sockets and temporary files use a short private path under `/run/user/$UID/codex-configure/<root-hash>/`, falling back to `/tmp/codex-configure-$UID/<root-hash>/`. This is configuration, identity, and binary isolation rather than a security boundary.
 
-A launch root starts with an empty Codex home and isolated desktop state. It never copies authentication, tasks, settings, skills, or plugins from `~/.codex`; the user signs into and configures each root independently.
+A launch root starts with an empty Codex home and isolated desktop state. During setup, a successful `codex login status` against normal `~/.codex` enables an explicit auth-only copy action. That action validates and atomically creates only `auth.json` at mode `0600`; it refuses symlinks and an existing destination. Tasks, settings, skills, plugins, sessions, U-M keys, and other files are never copied.
 
-Within either the global or rooted Codex home, the tool adds one managed subtree:
+Within the rooted Codex home, the tool adds one managed subtree:
 
 ```text
 $CODEX_HOME/
-|-- auth.json                          # Codex-owned; never modified
+|-- auth.json                          # Codex-owned; optionally copied into a fresh root
 |-- config.toml                        # materialized active configuration
 |-- sessions/                          # shared task history; never copied
 `-- codex-configure/
@@ -85,10 +87,10 @@ $CODEX_HOME/
 
 Tool-owned directories use mode `0700`; state, descriptors, catalogs, profiles, recovery data, and credentials use mode `0600`.
 
-Prebuilt Dynamic Core releases live outside `CODEX_HOME` so custom Codex homes share one installation:
+Prebuilt Dynamic Core releases live outside `CODEX_HOME` but inside the owning launch root:
 
 ```text
-~/.codex-configure/cores/
+ROOT/.codex-configure/cores/
 |-- codex-configure-core-<version>-<target>/
 |   |-- codex
 |   |-- codex-code-mode-host
@@ -98,9 +100,7 @@ Prebuilt Dynamic Core releases live outside `CODEX_HOME` so custom Codex homes s
 `-- current -> codex-configure-core-<version>-<target>
 ```
 
-Global initialization also writes `~/.codex-configure/launch.toml` and `launch.sh` beside `cores/`. It never writes `root.toml` there, which keeps the shared global store distinct from a directory launch root.
-
-Installations are immutable by convention and versioned for rollback. Runtime accepts `current` only when it selects the installed Python package's version; rollback therefore means installing the matching earlier Python package and rerunning setup. `setup dynamic` verifies a release SHA-256 sidecar, a manifest tied to the installed Python package's upstream pin and patch hash, and both executable hashes before atomically replacing the `current` symlink. It rejects unexpected archive members, links, special files, and unsafe paths. The release checksum detects corruption but is distributed with the asset and is not an independent signature.
+Installations are immutable by convention and versioned inside the root. Runtime accepts `current` only when it selects the installed Python package's version. Selecting Dynamic Picker during `init` installs it immediately; a later root-local `setup dynamic` verifies or reinstalls it. Installation verifies a release SHA-256 sidecar, a manifest tied to the installed Python package's upstream pin and patch hash, and both executable hashes before atomically replacing the `current` symlink. It rejects unexpected archive members, links, special files, and unsafe paths. The release checksum detects corruption but is distributed with the asset and is not an independent signature.
 
 Initialization is considered complete when the base/recovery state exists and every external descriptor present has a valid catalog. An OpenAI-only home is valid. A user may copy a complete non-secret provider layout and supply its declared keys through the environment instead of repeating interactive setup.
 
@@ -133,7 +133,7 @@ Catalog presence is discovery, not entitlement. A provider can still reject a li
 
 ## Credentials
 
-OpenAI authentication remains entirely under Codex's ownership. This project does not edit or replace `auth.json`.
+OpenAI authentication remains under Codex's ownership. This project may copy a valid `auth.json` into a fresh root only after the user selects that action; it never inspects token values, edits the document, or overwrites an existing destination.
 
 Named keys live in `$CODEX_HOME/codex-configure/.env`. An explicitly exported variable with the descriptor's exact name overrides its stored value for that process. Credential loading is filtered to names declared by installed descriptors; unrelated API keys from the shell are not copied into the tool's credential map.
 
@@ -183,7 +183,7 @@ The native binaries and Python package share a version. Release preparation is i
 3. Manually run both `Build Linux Dynamic Core` and `Build macOS Dynamic Core` with the draft tag. They check out that tag, build native release executables, create target-specific archives and checksums, and upload them to the draft without replacing an existing asset.
 4. Inspect both workflow results, retrieve the draft assets, verify their checksums, and run the applicable platform acceptance against the candidates.
 5. Publish the draft release. The `Publish to PyPI` workflow downloads and verifies both required target assets before publishing the wheel and source distribution through PyPI Trusted Publishing.
-6. On clean compatible accounts, run the documented `pipx install codex-configure && codex-configure setup dynamic` path as a public-download smoke check.
+6. On clean compatible accounts, install with pipx, create a disposable project root with `codex-configure init`, select Dynamic Picker, and run the documented launch smoke check.
 
 Keeping draft publication as the human gate prevents an uninspected binary build from publishing the Python installer. A failed or repeated binary workflow leaves the draft unpublished and does not overwrite existing assets.
 
@@ -200,15 +200,15 @@ OpenAI publishes Codex frequently, so the patch is deliberately pinned and sourc
 5. Run `git apply --check`, the focused external-catalog/parser/session/App Server checks recorded beside the patch, and one release build.
 6. Run the Linux VM acceptance below before claiming the refreshed pin works with Desktop.
 
-`codex-configure patch [PATH]` remains the one-command source-build fallback. It validates the Git root and canonical remote, checks out the exact pin without reset or broad cleanup, applies the patch to the index, checks the pinned minimum Rust version, builds stripped release `codex` and `codex-code-mode-host` executables, verifies both, and safely recognizes an idempotent rerun. Runtime resolution prefers an explicit `CODEX_CLI_PATH`, then the installed `cores/current` release, then the default source build. The builder refuses symlinks, wrong remotes, unrelated dirty state, and a patch that no longer applies.
+`codex-configure patch [PATH]` remains the one-command source-build fallback. Its default checkout is `ROOT/.codex-configure/codex-core/`. It validates the Git root and canonical remote, checks out the exact pin without reset or broad cleanup, applies the patch to the index, checks the pinned minimum Rust version, builds stripped release `codex` and `codex-code-mode-host` executables, verifies both, and safely recognizes an idempotent rerun. Runtime resolution prefers an explicit `CODEX_CLI_PATH`, then the root's installed `cores/current` release, then the root's default source build. The builder refuses symlinks, wrong remotes, unrelated dirty state, and a patch that no longer applies.
 
 ## Manual Linux VM Acceptance
 
 This is an agent-invoked release check, not CI. Use a dedicated Linux VM account and an isolated acceptance directory. Do not point tests at that account's normal `~/.codex`.
 
 1. Confirm the VM is running, SSH is reachable, the desktop package is installed, and enough disk is available. Discover live VM state rather than assuming an address or libvirt alias.
-2. Install the candidate Python package in the VM account. Use an authenticated `gh release download` to retrieve the draft archive and sidecar, run `sha256sum --check`, and unpack it in the isolated acceptance directory. For a patch-refresh diagnosis, a host source build made with `codex-configure patch /absolute/dedicated/path` may be copied instead. Keep `codex` and `codex-code-mode-host` together. Copy only the intended `auth.json` into the isolated acceptance home, set it to mode `0600`, and never copy the whole normal Codex home.
-3. Set an isolated `CODEX_HOME` in the VM acceptance directory. Run `codex-configure init` twice with disposable low-budget keys and distinct short names. Confirm two descriptors, two catalogs, two distinct `.env` variables, mode `0600`, and no key text outside `.env`.
+2. Install the candidate Python package in the VM account and create a disposable project directory. If testing a draft candidate directly, keep `codex` and `codex-code-mode-host` together and point only that run at them with `CODEX_CLI_PATH`.
+3. Run `codex-configure init` in that directory. Exercise either sign-in-later or an auth-only copy made from synthetic acceptance credentials, then add disposable low-budget Toolkit profiles with distinct exact names in one repeated provider loop. Confirm two descriptors, two catalogs, two distinct `.env` variables, mode `0600`, no key text outside `.env`, and no copied normal-home files other than the deliberately selected `auth.json`.
 4. Run the stdlib canary in `src/core-provider-model-picker/app_server_canary.py` once for each external provider. Supply the patched binary, isolated Codex home, provider short name, and an isolated task directory. The canary proves qualified catalog entries, OpenAI-to-external continuity in one task, and provider restoration after App Server restart without printing credentials.
 5. Start `codex-configure run desktop` with `CODEX_CLI_PATH` set to the unpacked draft candidate. For a graphics-limited VM, set `CODEX_DESKTOP_COMMAND='chatgpt --use-angle=swiftshader'`.
 6. In a private VM display, verify the real picker shows `openai::...` and both external namespaces. Make one exact-marker turn with OpenAI, change to each named provider between turns, return to OpenAI, restart Desktop, and resume the same task. Confirm the semantic markers survive and the last provider/model is restored.
@@ -222,8 +222,8 @@ The automated canary is the fast regression signal. Desktop acceptance is intent
 Use an Apple Silicon Mac with the ChatGPT desktop app and a testable U-M Toolkit allocation. On a managed Mac, stop and report any policy block rather than disabling security controls.
 
 1. Confirm `uname -m` reports `arm64`, record `sw_vers`, and fully quit ChatGPT.
-2. Install the candidate package, run `codex-configure setup dynamic`, and confirm it installs a verified `macos-arm64` Core without Git or Rust.
-3. Run `codex-configure init` with the tester's own Toolkit key. Confirm the key is absent from `config.toml`, catalogs, and command output.
+2. Install the candidate package and create a disposable project directory.
+3. Run `codex-configure init` with the tester's own Toolkit key, select Dynamic Picker, and confirm setup installs a verified root-local `macos-arm64` Core without Git or Rust. Confirm the key is absent from `config.toml`, catalogs, and command output.
 4. Run `codex-configure run desktop`. Confirm ChatGPT remains signed in and the picker shows qualified OpenAI and named U-M entries.
 5. Complete one turn with OpenAI, switch to the named U-M provider for another turn, return to OpenAI, restart ChatGPT through `codex-configure run desktop`, and resume the same task.
 6. Report the package version, ChatGPT version, picker result, turn results, and any launch or managed-security error. Do not send keys, `auth.json`, or the protected `.env` file.
@@ -237,8 +237,11 @@ A Desktop `GET /backend-api/accounts/.../settings` 401 with `Must use workspace 
 ## Durable Decisions
 
 - Keep one `CODEX_HOME` per launch context; providers within that context share its task universe.
-- Recognize roots by `root.toml`, not by `.codex-configure` directory presence, because the global Core store uses the same directory name.
+- Resolve ordinary commands only from the exact current directory; provide no global or parent fallback.
+- Recognize roots by `root.toml`, not by `.codex-configure` directory presence.
 - Preserve the caller's working directory and isolate persistent Codex, XDG, Electron, and browser state under the root.
+- Keep installed and source-built Dynamic Core binaries inside their owning project root for complete project-local removal.
+- Permit only an explicit, non-overwriting auth-only copy from a detected normal Codex home.
 - Keep the ordinary interface to read-only status, `init`, and `launch`; retain `run` as explicit advanced control.
 - Leave execution-host routing unchanged.
 - Keep provider/model in the existing string field as `provider::model`.

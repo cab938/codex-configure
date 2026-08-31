@@ -121,7 +121,8 @@ class ConfigManager:
         if not self.is_initialized():
             raise UserFacingError(
                 "codex-configure is not initialized for this CODEX_HOME. "
-                "Run `codex-configure init` first (or set CODEX_HOME to an initialized home)."
+                "Run `codex-configure init` in the launch root first, or pass "
+                "`--codex-home` for an explicitly managed home."
             )
 
     def list_providers(self, include_stock: bool = True) -> tuple[ProviderDescriptor, ...]:
