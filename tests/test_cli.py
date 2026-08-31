@@ -19,6 +19,7 @@ from codex_configure.cli import (
     run_doctor,
     run_init,
     run_run,
+    run_setup_dynamic,
     run_restore,
 )
 from codex_configure.core_install import CoreInstaller
@@ -314,6 +315,91 @@ class CliFlowTests(unittest.TestCase):
         active = tomlkit.parse((home / "config.toml").read_text(encoding="utf-8"))
         self.assertNotIn("model_provider", active)
         self.assertNotIn("model_catalog_json", active)
+
+    @mock.patch("codex_configure.cli.sys.platform", "darwin")
+    def test_macos_dynamic_desktop_launches_with_native_core(self) -> None:
+        temporary, home = self.make_home()
+        self.addCleanup(temporary.cleanup)
+        manager = ConfigManager(home)
+        self.save_profile(manager, "teaching", "first-secret")
+        binary = home / "codex"
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        binary.chmod(0o700)
+        code_mode_host = home / "codex-code-mode-host"
+        code_mode_host.write_text("#!/bin/sh\n", encoding="utf-8")
+        code_mode_host.chmod(0o700)
+        launcher = FakeLauncher()
+
+        result = run_run(
+            home,
+            "desktop",
+            Console(io.StringIO(), io.StringIO()),
+            {"CODEX_CLI_PATH": str(binary)},
+            manager=manager,
+            launcher=launcher,
+        )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(launcher.stopped_checks, 0)
+        self.assertEqual(
+            launcher.launches[0][1],
+            {
+                "TEACHING_API_KEY": "first-secret",
+                "CODEX_CLI_PATH": str(binary.resolve()),
+            },
+        )
+
+    @mock.patch("codex_configure.core_install.platform.machine", return_value="arm64")
+    @mock.patch("codex_configure.core_install.platform.system", return_value="Darwin")
+    @mock.patch("codex_configure.cli.sys.platform", "darwin")
+    def test_macos_dynamic_desktop_finds_installed_release(
+        self,
+        system: mock.Mock,
+        machine: mock.Mock,
+    ) -> None:
+        temporary, home = self.make_home()
+        self.addCleanup(temporary.cleanup)
+        manager = ConfigManager(home)
+        self.save_profile(manager, "teaching", "first-secret")
+        installed = CoreInstaller.versioned_directory(home, target="macos-arm64")
+        installed.mkdir(parents=True)
+        for name in ("codex", "codex-code-mode-host"):
+            path = installed / name
+            path.write_text("#!/bin/sh\n", encoding="utf-8")
+            path.chmod(0o700)
+        (installed.parent / "current").symlink_to(installed.name, target_is_directory=True)
+        launcher = FakeLauncher()
+
+        run_run(
+            home,
+            "desktop",
+            Console(io.StringIO(), io.StringIO()),
+            {"HOME": str(home)},
+            manager=manager,
+            launcher=launcher,
+        )
+
+        self.assertEqual(
+            launcher.launches[0][1]["CODEX_CLI_PATH"],
+            str((installed / "codex").resolve()),
+        )
+
+    @mock.patch("codex_configure.cli.sys.platform", "darwin")
+    def test_macos_setup_dynamic_uses_platform_installer(self) -> None:
+        installer = mock.Mock()
+        installer.install.return_value = mock.Mock(
+            reused=False,
+            version="0.4.0",
+            target="macos-arm64",
+            install_directory=Path("/tmp/macos-core"),
+        )
+        output = io.StringIO()
+
+        result = run_setup_dynamic(Console(io.StringIO(), output), {}, installer=installer)
+
+        self.assertEqual(result, 0)
+        installer.install.assert_called_once_with()
+        self.assertIn("Installed Dynamic Core 0.4.0 for macos-arm64", output.getvalue())
 
     @mock.patch("codex_configure.cli.sys.platform", "linux")
     def test_dynamic_desktop_finds_default_build_without_environment_override(self) -> None:

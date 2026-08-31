@@ -25,6 +25,8 @@ from .patcher import PatchResources
 RELEASE_BASE_URL = "https://github.com/cab938/codex-configure/releases/download"
 CORES_DIRECTORY = Path("~/.codex-configure/cores")
 TARGET = "linux-x86_64"
+MACOS_TARGET = "macos-arm64"
+SUPPORTED_TARGETS = {TARGET, MACOS_TARGET}
 MINIMUM_GLIBC = "2.35"
 EXECUTABLES = ("codex", "codex-code-mode-host")
 METADATA_FILES = ("manifest.json", "LICENSE", "NOTICE")
@@ -85,26 +87,32 @@ class CoreInstaller:
         cls,
         home: Path | None = None,
         version: str = __version__,
+        target: str = TARGET,
     ) -> Path:
-        return cls.default_root(home) / f"codex-configure-core-{version}-{TARGET}"
+        if target not in SUPPORTED_TARGETS:
+            raise ValueError(f"unsupported Dynamic Core target: {target}")
+        return cls.default_root(home) / f"codex-configure-core-{version}-{target}"
 
     @property
     def target(self) -> str:
-        if self.platform_name.casefold() != "linux" or self.machine not in {"x86_64", "amd64"}:
-            raise UserFacingError(
-                "Prebuilt Dynamic Core is currently available only for Linux x86_64. "
-                "Use `codex-configure patch` for a local source build."
-            )
-        try:
-            glibc_version = tuple(int(part) for part in self.libc_version.split(".")[:2])
-        except ValueError:
-            glibc_version = ()
-        if self.libc_name.casefold() != "glibc" or glibc_version < (2, 35):
-            raise UserFacingError(
-                f"Prebuilt Dynamic Core requires glibc {MINIMUM_GLIBC} or newer. "
-                "Use `codex-configure patch` for a local source build."
-            )
-        return TARGET
+        system = self.platform_name.casefold()
+        if system == "darwin" and self.machine in {"arm64", "aarch64"}:
+            return MACOS_TARGET
+        if system == "linux" and self.machine in {"x86_64", "amd64"}:
+            try:
+                glibc_version = tuple(int(part) for part in self.libc_version.split(".")[:2])
+            except ValueError:
+                glibc_version = ()
+            if self.libc_name.casefold() != "glibc" or glibc_version < (2, 35):
+                raise UserFacingError(
+                    f"Prebuilt Dynamic Core requires glibc {MINIMUM_GLIBC} or newer. "
+                    "Use `codex-configure patch` for a local source build."
+                )
+            return TARGET
+        raise UserFacingError(
+            "Prebuilt Dynamic Core is available for Linux x86_64 and macOS Apple Silicon. "
+            "Use `codex-configure patch` for a local source build."
+        )
 
     @property
     def asset_stem(self) -> str:
@@ -120,7 +128,7 @@ class CoreInstaller:
         target = self.target
         root = self.default_root(self.home)
         self._prepare_root(root)
-        destination = self.versioned_directory(self.home, self.version)
+        destination = self.versioned_directory(self.home, self.version, target)
 
         if destination.exists() or destination.is_symlink():
             self._validate_install(destination, target)
@@ -292,8 +300,11 @@ class CoreInstaller:
             raise UserFacingError("Dynamic Core manifest has an unsupported schema version.")
         if manifest.get("package_version") != self.version or manifest.get("target") != target:
             raise UserFacingError("Dynamic Core manifest does not match this package and platform.")
-        if manifest.get("minimum_glibc") != MINIMUM_GLIBC:
-            raise UserFacingError("Dynamic Core manifest has an unexpected glibc baseline.")
+        if target == TARGET:
+            if manifest.get("minimum_glibc") != MINIMUM_GLIBC:
+                raise UserFacingError("Dynamic Core manifest has an unexpected glibc baseline.")
+        elif "minimum_glibc" in manifest:
+            raise UserFacingError("Dynamic Core manifest has unexpected Linux metadata.")
         if (
             manifest.get("upstream_commit") != resources.upstream_commit
             or not _COMMIT_RE.fullmatch(str(manifest.get("upstream_commit", "")))

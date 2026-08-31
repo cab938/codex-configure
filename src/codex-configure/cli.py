@@ -88,7 +88,7 @@ class Console:
         if is_tty and self.input_stream is sys.stdin and self.output_stream is sys.stdout:
             try:
                 return self._curses_checkbox(title, options, checked, blocked)
-            except (OSError, RuntimeError):
+            except (OSError, RuntimeError, UserFacingError):
                 pass
 
         self.write(title)
@@ -519,12 +519,14 @@ def _patched_binary(environ: Mapping[str, str]) -> str:
             ) from exc
         configured_home = environ.get("HOME", "").strip()
         home = Path(configured_home) if configured_home else None
+        installer = CoreInstaller(home=home)
         installed = CoreInstaller.current_binary(home)
         installed_matches_package = False
         if installed.is_file() and os.access(installed, os.X_OK):
             try:
                 installed_matches_package = (
-                    installed.resolve().parent == CoreInstaller.versioned_directory(home).resolve()
+                    installed.resolve().parent
+                    == CoreInstaller.versioned_directory(home, target=installer.target).resolve()
                 )
             except (OSError, RuntimeError):
                 pass
@@ -595,8 +597,8 @@ def run_run(
         console.write(f"Launching {provider}/{app} with stock Codex Core...")
         return launcher.launch(command, credentials, remove_environment=("CODEX_CLI_PATH",))
 
-    if sys.platform != "linux":
-        raise UserFacingError("The dynamic provider picker is supported on Linux only in this release.")
+    if sys.platform not in {"linux", "darwin"}:
+        raise UserFacingError("The dynamic provider picker is supported on Linux and macOS.")
     binary = _patched_binary(environ)
     command = [binary] if app == "cli" else launcher.validate("desktop", requires_environment=True)
     descriptors = _profiles(manager)
@@ -631,8 +633,8 @@ def run_patch(
     checkout_path: Path | None = None,
 ) -> int:
     del codex_home, environ
-    if sys.platform != "linux":
-        raise UserFacingError("Core patching for the dynamic provider picker is supported on Linux only.")
+    if sys.platform not in {"linux", "darwin"}:
+        raise UserFacingError("Core patching for the dynamic provider picker is supported on Linux and macOS.")
     try:
         from .patcher import CodexPatcher
     except ImportError as exc:
@@ -655,8 +657,6 @@ def run_setup_dynamic(
     environ: Mapping[str, str],
     installer: Any | None = None,
 ) -> int:
-    if sys.platform != "linux":
-        raise UserFacingError("Prebuilt Dynamic Core is currently available only on Linux x86_64.")
     if installer is None:
         try:
             from .core_install import CoreInstaller

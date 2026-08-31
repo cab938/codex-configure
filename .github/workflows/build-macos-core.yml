@@ -2,17 +2,14 @@ name: Build macOS Dynamic Core
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - codex/macos-core-ci
-    paths:
-      - .github/workflows/build-macos-core.yml
-      - scripts/package_core_release.py
-      - src/codex-configure/patcher.py
-      - src/core-provider-model-picker/**
+    inputs:
+      tag:
+        description: Optional existing draft release tag, for example v0.4.0; leave blank for a test artifact
+        required: false
+        type: string
 
 concurrency:
-  group: macos-dynamic-core-${{ github.ref }}
+  group: macos-dynamic-core-${{ inputs.tag || github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -23,10 +20,14 @@ jobs:
     name: macOS arm64
     runs-on: macos-15
     timeout-minutes: 120
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@v6
         with:
@@ -34,6 +35,8 @@ jobs:
 
       - name: Read pinned build metadata
         id: metadata
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
           python - <<'PY'
           import ast
@@ -41,6 +44,7 @@ jobs:
           import re
           from pathlib import Path
 
+          tag = os.environ.get("RELEASE_TAG", "")
           init_tree = ast.parse(Path("src/codex-configure/__init__.py").read_text())
           package_version = next(
               ast.literal_eval(node.value)
@@ -61,12 +65,32 @@ jobs:
               raise SystemExit("invalid UPSTREAM_COMMIT")
           if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", rust_version):
               raise SystemExit("invalid MINIMUM_RUST_VERSION")
+          if tag:
+              if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
+                  raise SystemExit(f"invalid release tag: {tag!r}")
+              if tag != f"v{package_version}":
+                  raise SystemExit(f"release tag {tag!r} must be v{package_version}")
 
           with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
               output.write(f"package_version={package_version}\n")
               output.write(f"upstream_commit={commit}\n")
               output.write(f"rust_version={rust_version}\n")
           PY
+          if [ -n "$RELEASE_TAG" ]; then
+            test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$(git rev-parse HEAD)"
+          fi
+
+      - name: Require an existing draft release
+        if: inputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          state=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
+          if [ "$state" != "true" ]; then
+            echo "Release $RELEASE_TAG must exist and still be a draft." >&2
+            exit 1
+          fi
 
       - name: Verify Apple Silicon runner
         run: |
@@ -113,7 +137,7 @@ jobs:
           du -sh "$RUNNER_TEMP/codex-core"
           df -h
 
-      - name: Package test artifact
+      - name: Package release assets
         env:
           PACKAGE_VERSION: ${{ steps.metadata.outputs.package_version }}
           UPSTREAM_COMMIT: ${{ steps.metadata.outputs.upstream_commit }}
@@ -128,11 +152,22 @@ jobs:
             --license-file LICENSE \
             --notice-file NOTICE
 
-      - name: Store macOS test artifact
+      - name: Store workflow artifact
         uses: actions/upload-artifact@v6
         with:
           name: dynamic-core-${{ steps.metadata.outputs.package_version }}-macos-arm64
           path: dist/
           if-no-files-found: error
           compression-level: 0
-          retention-days: 14
+          retention-days: 30
+
+      - name: Upload assets to draft release
+        if: inputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          PACKAGE_VERSION: ${{ steps.metadata.outputs.package_version }}
+        run: |
+          asset="codex-configure-core-${PACKAGE_VERSION}-macos-arm64.tar.gz"
+          gh release upload "$RELEASE_TAG" "dist/$asset" "dist/$asset.sha256" \
+            --repo "$GITHUB_REPOSITORY"
