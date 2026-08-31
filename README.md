@@ -1,15 +1,15 @@
 # codex-configure
 
-`codex-configure` lets one Codex home use OpenAI and one or more named U-M GPT Toolkit services. Each U-M service has its own API key, billing allocation, and selected model catalog.
+`codex-configure` sets up Codex either in the normal `~/.codex` home or in a self-contained launch root under the current directory. Each configured home can use OpenAI and one or more named U-M GPT Toolkit services. Each U-M service has its own API key, billing allocation, and selected model catalog.
 
 There are two ways to use it:
 
 - **Per-launch Profiles** works with the stock Codex CLI and stock desktop app on macOS and Linux. Choose one provider when you launch.
 - **Dynamic Picker** uses a patched Codex Core on Linux or an Apple Silicon Mac. OpenAI and every configured U-M profile appear together in the desktop and CLI model picker.
 
-Both modes preserve the existing OpenAI sign-in and share the same tasks, settings, skills, and plugins in `CODEX_HOME`.
+Both modes preserve the OpenAI sign-in, tasks, settings, skills, and plugins belonging to the selected `CODEX_HOME`. A launch root intentionally gets its own persistent Codex home.
 
-> **Important:** Every `codex-configure run` command writes the selected active configuration to `$CODEX_HOME/config.toml` before launching Codex. This is a persistent change to the file, not a process-local override: it remains after Codex exits until another `codex-configure run` or `codex-configure restore` replaces it. Initialization preserves the original configuration, and switches are transactional and recoverable, but this tool does modify Codex's `config.toml`.
+> **Important:** Every `codex-configure launch` or `codex-configure run` command writes the selected active configuration to that launch context's `$CODEX_HOME/config.toml` before launching Codex. This is a persistent change to the file, not a process-local override. Bare `codex-configure` is strictly read-only: it reports status and never initializes or launches anything.
 
 ## Install
 
@@ -32,15 +32,44 @@ pipx install codex-configure
 
 On macOS, install Python and pipx first if they are unavailable. Homebrew users can run `brew install python pipx`.
 
-## Initialize Providers
+## Everyday Commands
 
-Run setup once for each U-M Toolkit key you want to use:
+The ordinary interface has three commands to remember:
+
+```bash
+codex-configure             # describe local and global configuration; no changes
+codex-configure init        # create or reconfigure a launch context
+codex-configure launch      # launch the configured default (desktop when omitted)
+```
+
+Specific launch targets and their remaining arguments pass through the generated launcher:
+
+```bash
+codex-configure launch desktop
+codex-configure launch cli
+codex-configure launch cli login
+codex-configure launch chrome
+```
+
+From an initialized launch root, `launch` uses the exact current directory's `.codex-configure/launch.sh`. It never searches parent directories. If the current directory has no `.codex-configure`, it uses the configured global launcher at `~/.codex-configure/launch.sh`. A local `.codex-configure` that is not a valid root is an error rather than a reason to silently fall back globally.
+
+`doctor`, `restore`, `setup dynamic`, `patch`, and the older explicit `run provider/app` form remain available for diagnosis and advanced control.
+
+## Initialize
+
+Run the setup wizard:
 
 ```bash
 codex-configure init
 ```
 
-Setup shows the stock and existing providers, then offers **New U-M GPT Toolkit Service**. It asks for:
+If the exact current directory is not already a launch root, setup first asks whether to:
+
+1. create a launch root in the current directory;
+2. configure the normal Codex home at `~/.codex`; or
+3. cancel without making changes.
+
+It then shows the stock and existing providers and offers **New U-M GPT Toolkit Service**. OpenAI-only setup is valid. For a Toolkit profile it asks for:
 
 - a short name containing lowercase letters, digits, hyphens, or underscores, such as `teaching` or `research-2026`;
 - a key from [U-M GPT Toolkit](https://toolkit.umgpt.umich.edu/); and
@@ -48,7 +77,27 @@ Setup shows the stock and existing providers, then offers **New U-M GPT Toolkit 
 
 The model selector shows everything advertised for that key. Models for which the installed Codex build has metadata are selectable; other entries remain visible but disabled. Compatible `gpt-5.6` models are checked by default.
 
-Run `init` again to add another service. The short name becomes the profile name, descriptor filename, credential variable prefix, and Dynamic Picker namespace. For example, `teaching` creates `TEACHING_API_KEY` and models such as `teaching::gpt-5.6-terra`.
+Finally, setup asks for the default launch behavior: Dynamic Picker, stock OpenAI, or one named provider with stock Core. Run `init` again in the same context to add another service or change that default. The short name becomes the profile name, descriptor filename, credential variable prefix, and Dynamic Picker namespace. For example, `teaching` creates `TEACHING_API_KEY` and models such as `teaching::gpt-5.6-terra`.
+
+## Launch Roots
+
+A launch root keeps persistent Codex and application state below the selected directory while leaving the caller's working directory unchanged:
+
+```text
+ROOT/.codex-configure/
+|-- root.toml                         # recognized-root marker
+|-- launch.toml                       # default Core and provider
+|-- launch.sh                         # generated pass-through launcher
+|-- codex-home/                       # CODEX_HOME and managed profiles
+|-- xdg/{config,data,state,cache}/
+|-- electron-user-data/
+`-- chrome/
+    |-- home/
+    |-- profile/
+    `-- chrome-native-hosts-v2.json
+```
+
+Short-lived socket and temporary paths use `/run/user/$UID/codex-configure/<root-id>/` when available, with a private `/tmp` fallback. This is configuration and binary isolation, not a hard filesystem or security boundary. `launch chrome` starts Chrome or Chromium with the root's isolated browser home and profile; it does not claim full browser/native-host integration on every Codex Desktop build.
 
 ## Per-launch Profiles
 
@@ -89,15 +138,15 @@ pipx install codex-configure && codex-configure setup dynamic
 
 The setup command selects the Linux x86_64 or macOS arm64 asset for the current machine, verifies the release checksum plus its pinned-patch manifest, and installs it under `~/.codex-configure/cores/codex-configure-core-<version>-<target>/`. An atomic `~/.codex-configure/cores/current` link selects the active version; older versioned installations remain available for rollback by reinstalling the matching Python package version and rerunning setup. No Git or Rust installation is required for this path.
 
-The installed Core is discovered automatically. No shell export is needed:
+The installed Core is discovered automatically. Select Dynamic Picker during `init`, then no shell export is needed:
 
 ```bash
-codex-configure run desktop
+codex-configure launch desktop
 # or
-codex-configure run cli
+codex-configure launch cli
 ```
 
-Dynamic launches do not require existing Codex clients to stop because they keep the shared base configuration and route each task through the patched Core. An already-running Desktop process still retains the environment from its first launch: if it was started with stock Core, close it once and restart it with `codex-configure run desktop` before relying on Dynamic Picker.
+Dynamic launches do not require existing Codex clients to stop because they keep the shared base configuration and route each task through the patched Core. An already-running Desktop process still retains the environment from its first launch: if it was started with stock Core, close it once and restart it with `codex-configure launch desktop` before relying on Dynamic Picker.
 
 On macOS, `run desktop` launches the executable inside `ChatGPT.app` with the installed native Core in `CODEX_CLI_PATH`. This integration hook is experimental: record the ChatGPT version and report any launch, sign-in, picker, or security-policy failure rather than changing managed security settings.
 
@@ -138,7 +187,7 @@ A missing or malformed external catalog is warned about and skipped. The patched
 
 ## Files And Safety
 
-The default Codex home is `~/.codex`. A custom `CODEX_HOME` is respected without changing the layout:
+The global Codex home is `~/.codex`. The older advanced `--codex-home` and `CODEX_HOME` paths remain available to explicit commands without changing the internal layout:
 
 ```text
 $CODEX_HOME/

@@ -4,7 +4,7 @@ This document records the durable design, patch-maintenance boundary, and platfo
 
 ## Scope
 
-`codex-configure` supports one stock provider and any number of named U-M GPT Toolkit services in a shared `CODEX_HOME`:
+`codex-configure` supports one stock provider and any number of named U-M GPT Toolkit services in either the normal `~/.codex` home or a directory-scoped launch root:
 
 - OpenAI uses Codex's existing ChatGPT authentication and bundled model catalog.
 - Each U-M service uses its own Portkey API key, static selected catalog, and short provider name.
@@ -13,11 +13,13 @@ It deliberately provides two operating modes.
 
 | Invocation | Core | Provider choice |
 | --- | --- | --- |
+| `launch [desktop|cli]` | Configured default | Configured default |
+| `launch chrome` | N/A | Isolated root browser profile |
 | `run openai/cli` or `run openai/desktop` | Stock | OpenAI fixed for that launch |
 | `run name/cli` or `run name/desktop` | Stock | Named U-M service fixed for that launch |
 | `run cli` or `run desktop` | Patched | Qualified provider/model in the existing picker |
 
-Per-launch profiles support macOS and Linux. Dynamic Picker is acceptance-tested on Linux x86_64 with the Ubuntu 22.04 / glibc 2.35 baseline. Native macOS arm64 installation and launch are available as an experimental path pending the same real-Desktop acceptance boundary.
+Bare `codex-configure` is a read-only status operation. `init` owns context creation and provider/default-launch configuration. `launch` resolves only the exact current directory: a valid local root wins, an invalid local `.codex-configure` blocks fallback, and an absent local directory permits the global launcher. Per-launch profiles support macOS and Linux. Dynamic Picker is acceptance-tested on Linux x86_64 with the Ubuntu 22.04 / glibc 2.35 baseline. Native macOS arm64 installation and launch are available as an experimental path pending the same real-Desktop acceptance boundary.
 
 ## System Boundary
 
@@ -39,7 +41,23 @@ The desktop renderer is not patched. `CODEX_CLI_PATH` tells a compatible desktop
 
 ## Runtime Layout
 
-The tool adds one subtree to the user's existing Codex home:
+A rooted context places all persistent launch state in one ignored envelope:
+
+```text
+ROOT/.codex-configure/
+|-- .gitignore
+|-- root.toml                         # schema marker; directory presence is insufficient
+|-- launch.toml                       # default Core/provider, never credentials
+|-- launch.sh                         # generated dispatcher
+|-- codex-home/                       # context-specific CODEX_HOME
+|-- xdg/{config,data,state,cache}/
+|-- electron-user-data/
+`-- chrome/{home,profile,chrome-native-hosts-v2.json}
+```
+
+The caller's `PWD` remains the task workspace. Runtime sockets and temporary files use a short private path under `/run/user/$UID/codex-configure/<root-hash>/`, falling back to `/tmp/codex-configure-$UID/<root-hash>/`. This is configuration, identity, and binary isolation rather than a security boundary.
+
+Within either the global or rooted Codex home, the tool adds one managed subtree:
 
 ```text
 $CODEX_HOME/
@@ -78,9 +96,11 @@ Prebuilt Dynamic Core releases live outside `CODEX_HOME` so custom Codex homes s
 `-- current -> codex-configure-core-<version>-<target>
 ```
 
+Global initialization also writes `~/.codex-configure/launch.toml` and `launch.sh` beside `cores/`. It never writes `root.toml` there, which keeps the shared global store distinct from a directory launch root.
+
 Installations are immutable by convention and versioned for rollback. Runtime accepts `current` only when it selects the installed Python package's version; rollback therefore means installing the matching earlier Python package and rerunning setup. `setup dynamic` verifies a release SHA-256 sidecar, a manifest tied to the installed Python package's upstream pin and patch hash, and both executable hashes before atomically replacing the `current` symlink. It rejects unexpected archive members, links, special files, and unsafe paths. The release checksum detects corruption but is distributed with the asset and is not an independent signature.
 
-Initialization is considered complete only when the base/recovery state and at least one valid external descriptor/catalog pair exist. A user may therefore copy a complete non-secret provider layout and supply its declared keys through the environment instead of repeating interactive setup.
+Initialization is considered complete when the base/recovery state exists and every external descriptor present has a valid catalog. An OpenAI-only home is valid. A user may copy a complete non-secret provider layout and supply its declared keys through the environment instead of repeating interactive setup.
 
 ## Provider Contract
 
@@ -214,7 +234,10 @@ A Desktop `GET /backend-api/accounts/.../settings` 401 with `Must use workspace 
 
 ## Durable Decisions
 
-- Keep one shared `CODEX_HOME`; do not create a second task universe per provider.
+- Keep one `CODEX_HOME` per launch context; providers within that context share its task universe.
+- Recognize roots by `root.toml`, not by `.codex-configure` directory presence, because the global Core store uses the same directory name.
+- Preserve the caller's working directory and isolate persistent Codex, XDG, Electron, and browser state under the root.
+- Keep the ordinary interface to read-only status, `init`, and `launch`; retain `run` as explicit advanced control.
 - Leave execution-host routing unchanged.
 - Keep provider/model in the existing string field as `provider::model`.
 - Allow provider changes only at committed turn boundaries.

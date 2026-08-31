@@ -14,6 +14,18 @@ from typing import Any, Iterable, Mapping, Sequence, TextIO
 
 from .catalog import CatalogService, ModelChoice, is_default_model_slug
 from .errors import UserFacingError
+from .launch_context import (
+    LaunchContext,
+    LaunchSettings,
+    default_global_state,
+    initialize_root,
+    launch_chrome,
+    load_launch_context,
+    load_launch_settings,
+    local_state,
+    rooted_environment,
+    write_launch_configuration,
+)
 from .providers import ProviderDescriptor, validate_shortname
 from .runtime import ConfigManager
 
@@ -441,7 +453,6 @@ def run_init(
     chosen = console.choose("Choose a model provider profile to initialize", labels)
     if chosen == 1:
         console.write("OpenAI is the stock provider; no external profile was created.")
-        console.write("Choose New U-M GPT Toolkit Service to complete codex-configure setup.")
         console.write(f"Configuration home: {manager.paths.root}")
         return 0
 
@@ -487,9 +498,6 @@ def run_init(
     )
     console.write()
     console.write(f"Profile `{shortname}` is ready with {len(selected)} model(s).")
-    console.write(
-        f"Run `codex-configure run desktop` for the dynamic picker or `codex-configure run {shortname}/desktop` for stock Core."
-    )
     return 0
 
 
@@ -567,13 +575,14 @@ def run_run(
     environ: Mapping[str, str],
     manager: ConfigManager | None = None,
     launcher: Launcher | None = None,
+    app_args: Sequence[str] = (),
 ) -> int:
     manager = manager or ConfigManager(codex_home)
     manager.require_initialized()
     launcher = launcher or Launcher(environ)
     provider, app = _run_target(target)
     if provider is not None:
-        command = launcher.validate(app, requires_environment=provider != "openai")
+        command = [*launcher.validate(app, requires_environment=provider != "openai"), *app_args]
         launcher.ensure_clients_stopped()
         if provider == "openai":
             active_profile = manager.activate_openai()
@@ -600,7 +609,11 @@ def run_run(
     if sys.platform not in {"linux", "darwin"}:
         raise UserFacingError("The dynamic provider picker is supported on Linux and macOS.")
     binary = _patched_binary(environ)
-    command = [binary] if app == "cli" else launcher.validate("desktop", requires_environment=True)
+    command = (
+        [binary, *app_args]
+        if app == "cli"
+        else [*launcher.validate("desktop", requires_environment=True), *app_args]
+    )
     descriptors = _profiles(manager)
     values = manager.load_credentials(environ)
     missing = [item.id for item in descriptors if item.env_key and not values.get(item.env_key)]
@@ -723,15 +736,263 @@ def run_restore(
     return 0
 
 
+def _choose_launch_settings(manager: ConfigManager, console: Console) -> LaunchSettings:
+    providers = _profiles(manager)
+    options = [
+        "Dynamic picker (patched Core; all configured providers)",
+        "OpenAI (stock Core)",
+        *(f"{provider.display_name} ({provider.id}, stock Core)" for provider in providers),
+    ]
+    default = 1 if providers else 2
+    selected = console.choose("Choose the default launch behavior", options, default=default)
+    if selected == 1:
+        return LaunchSettings(core="dynamic", provider="openai")
+    if selected == 2:
+        return LaunchSettings(core="stock", provider="openai")
+    return LaunchSettings(core="stock", provider=providers[selected - 3].id)
+
+
+def run_init_command(
+    cwd: Path,
+    user_home: Path,
+    console: Console,
+    environ: Mapping[str, str],
+    *,
+    explicit_codex_home: Path | None = None,
+) -> int:
+    normal_codex_home = (user_home / ".codex").resolve()
+    if explicit_codex_home is not None and explicit_codex_home.resolve() != normal_codex_home:
+        result = run_init(explicit_codex_home, console, environ)
+        if result == 0:
+            console.write("Custom Codex home configured; the default launch script was not changed.")
+        return result
+
+    cwd = cwd.resolve()
+    state_dir = local_state(cwd)
+    global_state = default_global_state(user_home).resolve()
+    root_context: LaunchContext | None = None
+
+    if (state_dir / "root.toml").exists():
+        root_context = initialize_root(cwd)
+    elif state_dir.exists() and state_dir != global_state:
+        raise UserFacingError(
+            f"{state_dir} exists but is not a codex-configure launch root (root.toml is missing)."
+        )
+    else:
+        selected = console.choose(
+            "What would you like to configure?",
+            (
+                f"Create a launch root in {cwd}",
+                f"Configure the normal Codex home at {normal_codex_home}",
+                "Cancel",
+            ),
+        )
+        if selected == 3:
+            console.write("Cancelled.")
+            return 0
+        if selected == 1:
+            if state_dir == global_state and state_dir.exists():
+                raise UserFacingError(
+                    "The current directory is your home directory, where ~/.codex-configure "
+                    "is reserved for global state. Choose the normal Codex home instead."
+                )
+            root_context = initialize_root(cwd)
+
+    if root_context is not None:
+        codex_home = root_context.codex_home
+        state_dir = root_context.state_dir
+        is_root = True
+    else:
+        codex_home = normal_codex_home
+        state_dir = global_state
+        is_root = False
+
+    result = run_init(codex_home, console, environ)
+    if result != 0:
+        return result
+    manager = ConfigManager(codex_home)
+    settings = _choose_launch_settings(manager, console)
+    write_launch_configuration(
+        state_dir,
+        codex_home,
+        settings,
+        root=is_root,
+    )
+    console.write()
+    if is_root:
+        console.write(f"Launch root: {cwd}")
+    else:
+        console.write(f"Global Codex home: {codex_home}")
+    console.write(f"Default launch: {settings.description}")
+    console.write(f"Launcher: {state_dir / 'launch.sh'}")
+    return 0
+
+
+def _provider_summary(manager: ConfigManager) -> str:
+    try:
+        external = manager.list_providers(include_stock=False)
+    except UserFacingError as exc:
+        return f"invalid ({exc})"
+    return ", ".join(("openai", *(provider.id for provider in external)))
+
+
+def _launcher_summary(path: Path) -> str:
+    if not path.is_file():
+        return f"missing ({path})"
+    if not os.access(path, os.X_OK):
+        return f"not executable ({path})"
+    return str(path)
+
+
+def _dynamic_core_summary(user_home: Path) -> str:
+    try:
+        from .core_install import CoreInstaller
+    except ImportError:
+        return "backend unavailable"
+    binary = CoreInstaller.current_binary(user_home)
+    if not binary.is_file() or not os.access(binary, os.X_OK):
+        return "not installed"
+    try:
+        version = binary.resolve().parent.name
+    except OSError:
+        version = binary.parent.name
+    return f"installed ({version})"
+
+
+def run_status(cwd: Path, user_home: Path, console: Console) -> int:
+    """Describe exact-CWD and normal-home configuration without mutating either."""
+
+    cwd = cwd.resolve()
+    state_dir = local_state(cwd)
+    global_state = default_global_state(user_home).resolve()
+    status = 0
+
+    console.write("Local launch root (current directory)")
+    console.write(f"  Directory: {cwd}")
+    if state_dir == global_state and not (state_dir / "root.toml").exists():
+        console.write("  Status: not configured (this is the global state directory)")
+    elif not state_dir.exists():
+        console.write("  Status: not configured")
+    elif not (state_dir / "root.toml").exists():
+        console.write(f"  Status: not recognized (missing {state_dir / 'root.toml'})")
+    else:
+        try:
+            context = load_launch_context(state_dir)
+        except UserFacingError as exc:
+            console.write(f"  Status: invalid ({exc})")
+            status = 2
+        else:
+            manager = ConfigManager(context.codex_home)
+            console.write(
+                "  Status: ready"
+                if manager.is_initialized()
+                else "  Status: root exists; init incomplete"
+            )
+            console.write(f"  CODEX_HOME: {context.codex_home}")
+            console.write(f"  Launch mode: {context.settings.description}")
+            console.write(f"  Providers: {_provider_summary(manager)}")
+            console.write(f"  Launcher: {_launcher_summary(context.launcher)}")
+
+    normal_codex_home = (user_home / ".codex").resolve()
+    manager = ConfigManager(normal_codex_home)
+    console.write()
+    console.write("Global configuration")
+    console.write(f"  CODEX_HOME: {normal_codex_home}")
+    console.write(f"  Managed: {'yes' if manager.is_initialized() else 'no'}")
+    console.write(f"  Providers: {_provider_summary(manager)}")
+    launch_file = global_state / "launch.toml"
+    if launch_file.exists():
+        try:
+            settings = load_launch_settings(global_state)
+        except UserFacingError as exc:
+            console.write(f"  Launch mode: invalid ({exc})")
+            status = 2
+        else:
+            console.write(f"  Launch mode: {settings.description}")
+    else:
+        console.write("  Launch mode: not configured")
+    console.write(f"  Dynamic Core: {_dynamic_core_summary(user_home)}")
+    console.write(f"  Launcher: {_launcher_summary(global_state / 'launch.sh')}")
+    return status
+
+
+def run_launch(cwd: Path, user_home: Path, args: Sequence[str]) -> int:
+    state_dir = local_state(cwd)
+    global_state = default_global_state(user_home).resolve()
+    if state_dir == global_state:
+        if not (global_state / "launch.toml").is_file():
+            raise UserFacingError("No global launch configuration found. Run `codex-configure init` first.")
+        selected = global_state
+    elif state_dir.exists():
+        if not (state_dir / "root.toml").exists():
+            raise UserFacingError(
+                f"{state_dir} exists but is not a launch root; refusing global fallback."
+            )
+        load_launch_context(state_dir)
+        selected = state_dir
+    elif (global_state / "launch.toml").is_file():
+        selected = global_state
+    else:
+        raise UserFacingError("No launch configuration found. Run `codex-configure init` first.")
+
+    context = load_launch_context(selected)
+    launcher = context.launcher
+    if not launcher.is_file() or not os.access(launcher, os.X_OK):
+        raise UserFacingError(f"Launch script is missing or not executable: {launcher}")
+    os.execv(str(launcher), [str(launcher), *args])
+    return 0  # pragma: no cover - os.execv does not return on success
+
+
+def run_launch_context(
+    state_dir: Path,
+    args: Sequence[str],
+    console: Console,
+    environ: Mapping[str, str],
+) -> int:
+    context = load_launch_context(state_dir)
+    target = args[0] if args else "desktop"
+    app_args = tuple(args[1:])
+    if target not in {"desktop", "cli", "chrome"}:
+        raise UserFacingError("Launch target must be `desktop`, `cli`, or `chrome`.")
+    child_environment = rooted_environment(context, environ)
+    if context.root is not None:
+        console.write(f"Launch root: {context.root}")
+    if target == "chrome":
+        return launch_chrome(context, app_args, child_environment)
+    run_target = (
+        target
+        if context.settings.core == "dynamic"
+        else f"{context.settings.provider}/{target}"
+    )
+    return run_run(
+        context.codex_home,
+        run_target,
+        console,
+        child_environment,
+        app_args=app_args,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Configure provider profiles and launch Codex with stock or patched Core."
+        description="Configure and launch global or directory-rooted Codex environments."
     )
     parser.add_argument("--codex-home", type=Path, help="Codex home (defaults to CODEX_HOME or ~/.codex).")
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
 
-    init = subparsers.add_parser("init", help="Initialize or update a provider profile.")
+    init = subparsers.add_parser(
+        "init",
+        help="Initialize or reconfigure a launch context.",
+        description="Create or reconfigure the exact-CWD launch root or normal ~/.codex home.",
+    )
     init.add_argument("--codex-home", type=Path, default=argparse.SUPPRESS)
+
+    launch = subparsers.add_parser(
+        "launch",
+        help="Launch from the local root or global configuration.",
+        description="Launch desktop by default, or pass a target and its remaining arguments.",
+    )
+    launch.add_argument("launch_args", nargs=argparse.REMAINDER, metavar="[desktop|cli|chrome] [ARGS...]")
 
     run = subparsers.add_parser("run", help="Run provider/app with stock Core or app with dynamic Core.")
     run.add_argument("target", help="provider/app or app (cli or desktop).")
@@ -749,25 +1010,45 @@ def build_parser() -> argparse.ArgumentParser:
     restore = subparsers.add_parser("restore", help="Restore the managed OpenAI configuration.")
     restore.add_argument("--codex-home", type=Path, default=argparse.SUPPRESS)
     restore.add_argument("--original", action="store_true")
+
+    internal_launch = subparsers.add_parser("_launch-context", help=argparse.SUPPRESS)
+    internal_launch.add_argument("state_dir", type=Path)
+    internal_launch.add_argument("launch_args", nargs=argparse.REMAINDER)
+    # argparse has no public hidden-subcommand API. Keep the generated-script
+    # entry point parseable without advertising it as part of the user CLI.
+    subparsers._choices_actions = [  # type: ignore[attr-defined]
+        action
+        for action in subparsers._choices_actions  # type: ignore[attr-defined]
+        if action.dest != "_launch-context"
+    ]
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     environ = os.environ.copy()
+    user_home = Path(environ.get("HOME", str(Path.home()))).expanduser().resolve()
     configured_home = environ.get("CODEX_HOME")
-    codex_home = args.codex_home or (
-        Path(configured_home).expanduser() if configured_home else Path.home() / ".codex"
+    explicit_codex_home = getattr(args, "codex_home", None)
+    codex_home = explicit_codex_home or (
+        Path(configured_home).expanduser() if configured_home else user_home / ".codex"
     )
     console = Console(sys.stdin, sys.stdout)
     try:
         if args.command is None:
-            raise UserFacingError(
-                "No command supplied. Run `codex-configure init` to set up a profile, "
-                "or `codex-configure run desktop` to use the dynamic picker."
-            )
+            return run_status(Path.cwd(), user_home, console)
         if args.command == "init":
-            return run_init(codex_home, console, environ)
+            return run_init_command(
+                Path.cwd(),
+                user_home,
+                console,
+                environ,
+                explicit_codex_home=explicit_codex_home,
+            )
+        if args.command == "launch":
+            return run_launch(Path.cwd(), user_home, args.launch_args)
+        if args.command == "_launch-context":
+            return run_launch_context(args.state_dir, args.launch_args, console, environ)
         if args.command == "run":
             return run_run(codex_home, args.target, console, environ)
         if args.command == "setup":

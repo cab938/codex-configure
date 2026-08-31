@@ -111,8 +111,6 @@ class ConfigManager:
             return False
         try:
             providers = self.registry.list_providers(include_stock=False)
-            if not providers:
-                return False
             for provider in providers:
                 self.registry.load_catalog(provider)
         except UserFacingError:
