@@ -67,8 +67,10 @@ missing, malformed, empty, reserved, or duplicate provider descriptor is
 skipped with a startup warning. Selecting a provider that was skipped returns
 an actionable configuration error.
 
-External picker values use `provider::model`; Core strips the provider prefix
+External picker values use `provider → model`; Core strips the provider prefix
 only at the provider request boundary. OpenAI remains the built-in provider.
+The former `provider::model` form remains readable so existing persisted tasks
+can be resumed and normalized to the arrow form.
 
 ## Focused checks
 

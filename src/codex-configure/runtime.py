@@ -24,6 +24,8 @@ except ImportError:  # pragma: no cover - macOS and Linux both provide fcntl
 
 PROVIDER_ID = "umich-toolkit"
 PROVIDER_URL = "https://api.portkey.ai/v1"
+QUALIFIED_MODEL_SEPARATOR = " → "
+LEGACY_QUALIFIED_MODEL_SEPARATOR = "::"
 
 
 @dataclass(frozen=True)
@@ -391,8 +393,19 @@ class ConfigManager:
             self._reconcile_active_config()
             base = tomlkit.parse(self.paths.base_config.read_text(encoding="utf-8"))
             model = base.get("model")
-            if isinstance(model, str) and "::" in model:
-                provider, unqualified_model = model.split("::", 1)
+            separator = next(
+                (
+                    candidate
+                    for candidate in (
+                        QUALIFIED_MODEL_SEPARATOR,
+                        LEGACY_QUALIFIED_MODEL_SEPARATOR,
+                    )
+                    if isinstance(model, str) and candidate in model
+                ),
+                None,
+            )
+            if isinstance(model, str) and separator is not None:
+                provider, unqualified_model = model.split(separator, 1)
                 if provider == "openai" and unqualified_model:
                     base["model"] = unqualified_model
                 else:

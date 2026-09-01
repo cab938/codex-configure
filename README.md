@@ -90,7 +90,7 @@ Finally, setup asks which Core the root should use:
 1. **Dynamic Picker - all configured providers (recommended)**; or
 2. **Stock Core - one fixed provider (advanced)**.
 
-Choosing Dynamic Picker downloads and verifies that root's patched Core immediately. Choosing Stock Core asks which configured provider to fix for launches and uses the already-installed stock Codex executable. Run `init` again in the same root to add another service or change the Core/default provider. The short name becomes the exact profile name, descriptor filename, credential variable prefix, and Dynamic Picker namespace. For example, `teaching` creates `TEACHING_API_KEY` and models such as `teaching::gpt-5.6-terra`.
+Choosing Dynamic Picker downloads and verifies that root's patched Core immediately. Choosing Stock Core asks which configured provider to fix for launches and uses the already-installed stock Codex executable. Run `init` again in the same root to add another service or change the Core/default provider. The short name becomes the exact profile name, descriptor filename, credential variable prefix, and Dynamic Picker namespace. For example, `teaching` creates `TEACHING_API_KEY` and models such as `teaching → gpt-5.6-terra`.
 
 ## Launch Roots
 
@@ -132,7 +132,7 @@ codex-configure run teaching/desktop
 Before launching, this mode replaces the active `$CODEX_HOME/config.toml` with a configuration for the selected provider. The change is not automatically undone when the CLI or desktop app exits; it remains active until a later `codex-configure run` selects another configuration or `codex-configure restore` is run. The command prints the profile directory it used and removes any inherited `CODEX_CLI_PATH` so a global shell setting cannot accidentally select the patched Core.
 
 Only the selected U-M key is added to that child process. OpenAI launches receive no U-M credentials.
-When returning from Dynamic Picker, a saved `openai::` model is unqualified for stock Core; an external-qualified model is omitted so stock OpenAI can choose its own supported default.
+When returning from Dynamic Picker, a saved OpenAI-qualified model such as `openai → gpt-5.6-sol` is unqualified for stock Core; an external-qualified model is omitted so stock OpenAI can choose its own supported default. The launcher also recognizes the former `::` separator while upgrading an existing root.
 
 On macOS, `codex-configure` launches the executable inside `ChatGPT.app` so the selected environment reaches Codex Core. Set `CODEX_DESKTOP_COMMAND` if the application is installed somewhere unusual. On Linux, the normal command is `chatgpt`; the same override supports another compatible desktop command or VM flags.
 
@@ -187,9 +187,9 @@ The unqualified `desktop` and `cli` targets are intentionally different from `pr
 The existing picker shows qualified entries such as:
 
 ```text
-openai::gpt-5.6-sol
-teaching::gpt-5.6-terra
-research::gpt-5.6-luna
+openai → gpt-5.6-sol
+teaching → gpt-5.6-terra
+research → gpt-5.6-luna
 ```
 
 You can change provider/model between turns in one task. The working directory, execution host, permissions, and semantic conversation stay with the task. Provider-private reasoning data is discarded at a provider boundary because another provider cannot safely consume it.

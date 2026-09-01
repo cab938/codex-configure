@@ -1,14 +1,36 @@
+diff --git a/codex-rs/app-server/Cargo.toml b/codex-rs/app-server/Cargo.toml
+index 2f08b0fdc8..21201ffd03 100644
+--- a/codex-rs/app-server/Cargo.toml
++++ b/codex-rs/app-server/Cargo.toml
+@@ -75,6 +75,7 @@ codex-memories-write = { workspace = true }
+ codex-mcp = { workspace = true }
+ codex-mcp-extension = { workspace = true }
+ codex-model-provider = { workspace = true }
++codex-model-provider-info = { workspace = true }
+ codex-models-manager = { workspace = true }
+ codex-protocol = { workspace = true }
+ codex-queue-extension = { workspace = true }
+@@ -125,7 +126,6 @@ axum = { workspace = true, default-features = false, features = [
+     "tokio",
+ ] }
+ base64 = { workspace = true }
+-codex-model-provider-info = { workspace = true }
+ codex-utils-cargo-bin = { workspace = true }
+ core_test_support = { workspace = true }
+ flate2 = { workspace = true }
 diff --git a/codex-rs/app-server/src/models.rs b/codex-rs/app-server/src/models.rs
-index 1063e64c33..393d964cf5 100644
+index 1063e64c33..7870e4699e 100644
 --- a/codex-rs/app-server/src/models.rs
 +++ b/codex-rs/app-server/src/models.rs
-@@ -5,32 +5,96 @@ use codex_app_server_protocol::ModelServiceTier;
+@@ -5,32 +5,97 @@ use codex_app_server_protocol::ModelServiceTier;
  use codex_app_server_protocol::ModelUpgradeInfo;
  use codex_app_server_protocol::ReasoningEffortOption;
  use codex_core::ThreadManager;
 +use codex_core::config::Config;
  use codex_http_client::HttpClientFactory;
 +use codex_model_provider::create_model_provider;
++use codex_model_provider_info::canonicalize_qualified_model;
++use codex_model_provider_info::format_qualified_model;
  use codex_models_manager::manager::RefreshStrategy;
  use codex_protocol::openai_models::ModelPreset;
  use codex_protocol::openai_models::ReasoningEffortPreset;
@@ -83,11 +105,10 @@ index 1063e64c33..393d964cf5 100644
 +}
 +
 +fn qualify_model(provider_id: &str, model: &str) -> String {
-+    if model.split_once("::").is_some() {
-+        model.to_string()
-+    } else {
-+        format!("{provider_id}::{model}")
-+    }
++    canonicalize_qualified_model(model)
++        .ok()
++        .flatten()
++        .unwrap_or_else(|| format_qualified_model(provider_id, model))
  }
  
 -fn model_from_preset(preset: ModelPreset) -> Model {
@@ -111,7 +132,7 @@ index 1063e64c33..393d964cf5 100644
              upgrade_copy: upgrade.upgrade_copy.clone(),
              model_link: upgrade.model_link.clone(),
              migration_markdown: upgrade.migration_markdown.clone(),
-@@ -40,7 +104,7 @@ fn model_from_preset(preset: ModelPreset) -> Model {
+@@ -40,7 +105,7 @@ fn model_from_preset(preset: ModelPreset) -> Model {
                  .map(chrono::DateTime::timestamp),
          }),
          availability_nux: preset.availability_nux.map(Into::into),
@@ -149,10 +170,16 @@ index 9c7bd4e806..de4e058960 100644
          .await;
          let total = models.len();
 diff --git a/codex-rs/app-server/src/request_processors/persisted_resume_settings.rs b/codex-rs/app-server/src/request_processors/persisted_resume_settings.rs
-index 5e408b02c9..95379b0ffe 100644
+index 5e408b02c9..112e1f5151 100644
 --- a/codex-rs/app-server/src/request_processors/persisted_resume_settings.rs
 +++ b/codex-rs/app-server/src/request_processors/persisted_resume_settings.rs
-@@ -6,6 +6,8 @@ use codex_rollout::RolloutItem;
+@@ -1,3 +1,5 @@
++use codex_model_provider_info::canonicalize_qualified_model;
++use codex_model_provider_info::format_qualified_model;
+ use codex_protocol::config_types::ApprovalsReviewer;
+ use codex_protocol::models::ActivePermissionProfile;
+ use codex_protocol::protocol::AskForApproval;
+@@ -6,6 +8,8 @@ use codex_rollout::RolloutItem;
  
  #[derive(Debug, PartialEq, Eq)]
  pub(super) struct PersistedResumeSettings {
@@ -161,7 +188,7 @@ index 5e408b02c9..95379b0ffe 100644
      pub(super) approval_policy: AskForApproval,
      pub(super) approvals_reviewer: Option<ApprovalsReviewer>,
      pub(super) active_permission_profile: Option<ActivePermissionProfile>,
-@@ -19,21 +21,50 @@ pub(super) fn latest_persisted_resume_settings(
+@@ -19,21 +23,48 @@ pub(super) fn latest_persisted_resume_settings(
          .enumerate()
          .rev()
          .find_map(|(index, item)| match item {
@@ -190,10 +217,8 @@ index 5e408b02c9..95379b0ffe 100644
 +                let model_provider_id =
 +                    preceding_settings.map(|settings| settings.model_provider_id.clone());
 +                let model = match model_provider_id.as_deref() {
-+                    Some(provider_id) if model.split_once("::").is_none() => {
-+                        Some(format!("{provider_id}::{model}"))
-+                    }
-+                    _ => Some(model),
++                    Some(provider_id) => Some(qualify_persisted_model(provider_id, &model)),
++                    None => Some(canonicalize_persisted_model(&model)),
 +                };
 +                Some(PersistedResumeSettings {
 +                    model,
@@ -215,24 +240,42 @@ index 5e408b02c9..95379b0ffe 100644
 +            }
              RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
                  Some(PersistedResumeSettings {
-+                    model: Some(event.thread_settings.model.clone()),
++                    model: Some(canonicalize_persisted_model(&event.thread_settings.model)),
 +                    model_provider_id: Some(event.thread_settings.model_provider_id.clone()),
                      approval_policy: event.thread_settings.approval_policy,
                      approvals_reviewer: Some(event.thread_settings.approvals_reviewer),
                      active_permission_profile: event
-@@ -46,6 +77,10 @@ pub(super) fn latest_persisted_resume_settings(
+@@ -46,6 +77,28 @@ pub(super) fn latest_persisted_resume_settings(
          })
  }
  
 +fn model_suffix(model: &str) -> &str {
-+    model.split_once("::").map_or(model, |(_, model)| model)
++    codex_model_provider_info::parse_qualified_model(model)
++        .ok()
++        .flatten()
++        .map_or(model, |qualified| qualified.wire_model)
++}
++
++fn canonicalize_persisted_model(model: &str) -> String {
++    canonicalize_qualified_model(model)
++        .ok()
++        .flatten()
++        .unwrap_or_else(|| model.to_string())
++}
++
++fn qualify_persisted_model(provider_id: &str, model: &str) -> String {
++    match canonicalize_qualified_model(model) {
++        Ok(Some(model)) => model,
++        Ok(None) => format_qualified_model(provider_id, model),
++        Err(_) => model.to_string(),
++    }
 +}
 +
  #[cfg(test)]
  #[path = "persisted_resume_settings_tests.rs"]
  mod tests;
 diff --git a/codex-rs/app-server/src/request_processors/persisted_resume_settings_tests.rs b/codex-rs/app-server/src/request_processors/persisted_resume_settings_tests.rs
-index 98ab3f59a2..acf53a4e21 100644
+index 98ab3f59a2..11c99914d2 100644
 --- a/codex-rs/app-server/src/request_processors/persisted_resume_settings_tests.rs
 +++ b/codex-rs/app-server/src/request_processors/persisted_resume_settings_tests.rs
 @@ -25,12 +25,28 @@ fn settings_item(
@@ -312,7 +355,7 @@ index 98ab3f59a2..acf53a4e21 100644
  }
  
 +#[test]
-+fn latest_turn_context_keeps_qualified_model_from_settings_snapshot() {
++fn latest_turn_context_normalizes_legacy_qualified_model_from_settings_snapshot() {
 +    let history = vec![
 +        settings_item_with_model_provider(
 +            "umich-toolkit::terra",
@@ -333,7 +376,7 @@ index 98ab3f59a2..acf53a4e21 100644
 +    assert_eq!(
 +        latest_persisted_resume_settings(&history),
 +        Some(PersistedResumeSettings {
-+            model: Some("umich-toolkit::terra".to_string()),
++            model: Some("umich-toolkit → terra".to_string()),
 +            model_provider_id: Some("umich-toolkit".to_string()),
 +            approval_policy: AskForApproval::Never,
 +            approvals_reviewer: Some(ApprovalsReviewer::User),
@@ -374,7 +417,7 @@ index 98ab3f59a2..acf53a4e21 100644
  #[test]
  fn latest_turn_context_wins_over_earlier_settings_update() {
      let expected = PersistedResumeSettings {
-+        model: Some("openai::gpt-5".to_string()),
++        model: Some("openai → gpt-5".to_string()),
 +        model_provider_id: Some("openai".to_string()),
          approval_policy: AskForApproval::UnlessTrusted,
          approvals_reviewer: Some(ApprovalsReviewer::User),
@@ -513,14 +556,14 @@ index ffba9ba44f..8befeff7d6 100644
      fn merge_persisted_resume_metadata_preserves_explicit_overrides() -> Result<()> {
          let mut request_overrides = Some(HashMap::from([(
 diff --git a/codex-rs/app-server/tests/suite/v2/model_list.rs b/codex-rs/app-server/tests/suite/v2/model_list.rs
-index 7e21fb6d8e..a3d8b18f6b 100644
+index 7e21fb6d8e..1f405f79ae 100644
 --- a/codex-rs/app-server/tests/suite/v2/model_list.rs
 +++ b/codex-rs/app-server/tests/suite/v2/model_list.rs
 @@ -31,12 +31,13 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
  const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
  
  fn model_from_preset(preset: &ModelPreset) -> Model {
-+    let qualify = |model: &str| format!("openai::{model}");
++    let qualify = |model: &str| format!("openai → {model}");
      Model {
 -        id: preset.id.clone(),
 -        model: preset.model.clone(),
@@ -543,7 +586,7 @@ index 7e21fb6d8e..a3d8b18f6b 100644
          description: preset.description.clone(),
          model_specialty: preset.model_specialty.clone(),
          hidden: !preset.show_in_picker,
-@@ -329,6 +330,121 @@ async fn list_models_pagination_works() -> Result<()> {
+@@ -329,6 +330,114 @@ async fn list_models_pagination_works() -> Result<()> {
      );
  }
  
@@ -636,28 +679,21 @@ index 7e21fb6d8e..a3d8b18f6b 100644
 +        cursor = Some(next_cursor);
 +    }
 +
-+    assert!(
-+        items
-+            .iter()
-+            .any(|item| item.id == "umich-toolkit::um-model")
-+    );
-+    assert!(items.iter().all(|item| item.id.contains("::")));
-+    assert!(items.iter().all(|item| item.model.contains("::")));
++    assert!(items.iter().any(|item| item.id == "umich-toolkit → um-model"));
++    assert!(items.iter().all(|item| item.id.contains(" → ")));
++    assert!(items.iter().all(|item| item.model.contains(" → ")));
 +    let toolkit = items
 +        .iter()
-+        .find(|item| item.id == "umich-toolkit::um-model")
++        .find(|item| item.id == "umich-toolkit → um-model")
 +        .expect("U-M Toolkit model should be listed");
-+    assert_eq!(toolkit.display_name, "umich-toolkit::um-model");
-+    assert_eq!(
-+        toolkit.upgrade.as_deref(),
-+        Some("umich-toolkit::um-upgrade")
-+    );
++    assert_eq!(toolkit.display_name, "umich-toolkit → um-model");
++    assert_eq!(toolkit.upgrade.as_deref(), Some("umich-toolkit → um-upgrade"));
 +    assert_eq!(
 +        toolkit
 +            .upgrade_info
 +            .as_ref()
 +            .map(|upgrade| upgrade.model.as_str()),
-+        Some("umich-toolkit::um-upgrade")
++        Some("umich-toolkit → um-upgrade")
 +    );
 +    Ok(())
 +}
@@ -809,7 +845,7 @@ index 9569649f8b..b9d9567113 100644
      let compaction_output_result = run_remote_compaction_request_v2(
          sess,
 diff --git a/codex-rs/core/src/config/config_tests.rs b/codex-rs/core/src/config/config_tests.rs
-index 4cc4bc7e90..1c1d9541d8 100644
+index 4cc4bc7e90..83ab50471c 100644
 --- a/codex-rs/core/src/config/config_tests.rs
 +++ b/codex-rs/core/src/config/config_tests.rs
 @@ -950,6 +950,149 @@ profile = "codex-bedrock"
@@ -820,7 +856,7 @@ index 4cc4bc7e90..1c1d9541d8 100644
 +async fn qualified_model_selects_provider_and_preserves_model_identity() {
 +    let cfg = toml::from_str::<ConfigToml>(
 +        r#"
-+model = "custom::models/gpt::latest"
++model = "custom → models/gpt::latest"
 +
 +[model_providers.custom]
 +name = "Custom"
@@ -837,7 +873,7 @@ index 4cc4bc7e90..1c1d9541d8 100644
 +    .await
 +    .expect("qualified model config should load");
 +
-+    assert_eq!(config.model, Some("custom::models/gpt::latest".to_string()));
++    assert_eq!(config.model, Some("custom → models/gpt::latest".to_string()));
 +    assert_eq!(config.model_provider_id, "custom");
 +    assert_eq!(
 +        config.model_provider.base_url.as_deref(),
@@ -849,7 +885,7 @@ index 4cc4bc7e90..1c1d9541d8 100644
 +async fn qualified_model_rejects_conflicting_explicit_provider() {
 +    let cfg = toml::from_str::<ConfigToml>(
 +        r#"
-+model = "custom::gpt"
++model = "custom → gpt"
 +model_provider = "other"
 +
 +[model_providers.custom]
@@ -898,7 +934,7 @@ index 4cc4bc7e90..1c1d9541d8 100644
 +    let config = Config::load_from_base_config_with_overrides(
 +        cfg,
 +        ConfigOverrides {
-+            model: Some("openai::gpt-5.6-sol".to_string()),
++            model: Some("openai → gpt-5.6-sol".to_string()),
 +            ..Default::default()
 +        },
 +        tempdir().expect("tempdir").abs(),
@@ -906,7 +942,7 @@ index 4cc4bc7e90..1c1d9541d8 100644
 +    .await
 +    .expect("qualified picker model should replace the configured provider default");
 +
-+    assert_eq!(config.model, Some("openai::gpt-5.6-sol".to_string()));
++    assert_eq!(config.model, Some("openai → gpt-5.6-sol".to_string()));
 +    assert_eq!(config.model_provider_id, "openai");
 +}
 +
@@ -914,7 +950,7 @@ index 4cc4bc7e90..1c1d9541d8 100644
 +async fn malformed_qualified_model_is_a_config_error() {
 +    let cfg = toml::from_str::<ConfigToml>(
 +        r#"
-+model = "::gpt"
++model = " → gpt"
 +"#,
 +    )
 +    .expect("malformed qualified model should deserialize as TOML");
@@ -963,7 +999,7 @@ index 4cc4bc7e90..1c1d9541d8 100644
  async fn managed_residency_warns_about_provider_header_overrides_without_mutating_config()
  -> std::io::Result<()> {
 diff --git a/codex-rs/core/src/config/mod.rs b/codex-rs/core/src/config/mod.rs
-index 9c1b419903..4a363b143f 100644
+index 9c1b419903..a331db048b 100644
 --- a/codex-rs/core/src/config/mod.rs
 +++ b/codex-rs/core/src/config/mod.rs
 @@ -1,6 +1,7 @@
@@ -974,15 +1010,17 @@ index 9c1b419903..4a363b143f 100644
  use crate::guardian::BUNDLED_GUARDIAN_POLICY;
  use crate::path_utils::normalize_for_native_workdir;
  use crate::unified_exec::DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS;
-@@ -92,6 +93,7 @@ use codex_model_provider_info::ModelProviderInfo;
+@@ -91,7 +92,9 @@ use codex_model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
+ use codex_model_provider_info::ModelProviderInfo;
  use codex_model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
  use codex_model_provider_info::built_in_model_providers;
++use codex_model_provider_info::canonicalize_qualified_model;
  use codex_model_provider_info::merge_configured_model_providers;
 +use codex_model_provider_info::parse_qualified_model;
  use codex_models_manager::ModelsManagerConfig;
  use codex_protocol::config_types::AltScreenMode;
  use codex_protocol::config_types::AutoCompactTokenLimitScope;
-@@ -953,6 +955,9 @@ pub struct Config {
+@@ -953,6 +956,9 @@ pub struct Config {
      /// When set, this replaces the bundled catalog for the current process.
      pub model_catalog: Option<ModelsResponse>,
  
@@ -992,7 +1030,7 @@ index 9c1b419903..4a363b143f 100644
      /// Optional verbosity control for GPT-5 models (Responses API `text.verbosity`).
      pub model_verbosity: Option<Verbosity>,
  
-@@ -1605,6 +1610,15 @@ impl Config {
+@@ -1605,6 +1611,15 @@ impl Config {
          }
      }
  
@@ -1008,7 +1046,7 @@ index 9c1b419903..4a363b143f 100644
      /// Returns auth routing resolved from the effective feature configuration.
      pub fn auth_route_config(&self) -> AuthRouteConfig {
          AuthRouteConfig::from_http_client_factory(self.http_client_factory())
-@@ -3131,6 +3145,11 @@ impl Config {
+@@ -3131,6 +3146,11 @@ impl Config {
      ) -> std::io::Result<Self> {
          // Keep the large config-construction future off small test thread stacks.
          Box::pin(async move {
@@ -1020,7 +1058,7 @@ index 9c1b419903..4a363b143f 100644
          if cfg.experimental_thread_store_endpoint.is_some() {
              return Err(std::io::Error::new(
                  std::io::ErrorKind::InvalidInput,
-@@ -3160,6 +3179,7 @@ impl Config {
+@@ -3160,6 +3180,7 @@ impl Config {
              .startup_warnings()
              .unwrap_or_default()
              .to_vec();
@@ -1028,7 +1066,7 @@ index 9c1b419903..4a363b143f 100644
          let configured_sqlite_home = cfg.sqlite_home.clone();
          requirements::apply_to_config(
              &mut cfg,
-@@ -3691,13 +3711,50 @@ impl Config {
+@@ -3691,13 +3712,50 @@ impl Config {
              merge_configured_model_providers(built_in_model_providers(openai_base_url), cfg.model_providers)
                  .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidData, message))?;
  
@@ -1083,7 +1121,20 @@ index 9c1b419903..4a363b143f 100644
                      OLLAMA_CHAT_PROVIDER_REMOVED_ERROR.to_string()
                  } else {
                      format!("Model provider `{model_provider_id}` not found")
-@@ -4225,6 +4282,7 @@ impl Config {
+@@ -3826,7 +3884,11 @@ impl Config {
+ 
+         let forced_login_method = cfg.forced_login_method;
+ 
+-        let model = model.or(cfg.model);
++        let model = model.or(cfg.model).map(|model| {
++            canonicalize_qualified_model(&model)
++                .expect("qualified model was validated before provider selection")
++                .unwrap_or(model)
++        });
+         let notices = cfg.notice.unwrap_or_default();
+         let service_tier = match service_tier_override {
+             Some(Some(service_tier)) => Some(service_tier),
+@@ -4225,6 +4287,7 @@ impl Config {
              plan_mode_reasoning_effort: cfg.plan_mode_reasoning_effort,
              model_reasoning_summary: cfg.model_reasoning_summary,
              model_catalog,
@@ -1484,10 +1535,10 @@ index 8463ae9e16..17799b38f6 100644
  mod session_prefix;
 diff --git a/codex-rs/core/src/provider_runtime.rs b/codex-rs/core/src/provider_runtime.rs
 new file mode 100644
-index 0000000000..e5c842a65d
+index 0000000000..1d0ea1a7ad
 --- /dev/null
 +++ b/codex-rs/core/src/provider_runtime.rs
-@@ -0,0 +1,168 @@
+@@ -0,0 +1,171 @@
 +//! Provider-scoped runtime state used by thread and turn settings.
 +
 +use std::path::PathBuf;
@@ -1498,6 +1549,8 @@ index 0000000000..e5c842a65d
 +use codex_model_provider::SharedModelProvider;
 +use codex_model_provider::create_model_provider;
 +use codex_model_provider_info::ModelProviderInfo;
++use codex_model_provider_info::canonicalize_qualified_model;
++use codex_model_provider_info::format_qualified_model;
 +use codex_model_provider_info::parse_qualified_model;
 +use codex_models_manager::manager::ModelsManager;
 +use codex_models_manager::manager::ModelsManagerFuture;
@@ -1557,13 +1610,11 @@ index 0000000000..e5c842a65d
 +
 +    fn qualify_presets(&self, presets: &mut [ModelPreset]) {
 +        for preset in presets {
-+            if parse_qualified_model(&preset.model)
-+                .ok()
-+                .flatten()
-+                .is_none()
-+            {
-+                preset.model = format!("{}::{}", self.provider_id, preset.model);
-+            }
++            preset.model = match canonicalize_qualified_model(&preset.model) {
++                Ok(Some(model)) => model,
++                Ok(None) => format_qualified_model(&self.provider_id, &preset.model),
++                Err(_) => continue,
++            };
 +        }
 +    }
 +}
@@ -1604,9 +1655,12 @@ index 0000000000..e5c842a65d
 +                )
 +                .await;
 +            if model.is_some() {
-+                model.clone().unwrap_or(selected)
++                model
++                    .as_deref()
++                    .and_then(|model| canonicalize_qualified_model(model).ok().flatten())
++                    .unwrap_or_else(|| model.clone().unwrap_or(selected))
 +            } else {
-+                format!("{}::{selected}", self.provider_id)
++                format_qualified_model(&self.provider_id, &selected)
 +            }
 +        })
 +    }
@@ -1658,7 +1712,7 @@ index 0000000000..e5c842a65d
 +mod tests;
 diff --git a/codex-rs/core/src/provider_runtime_tests.rs b/codex-rs/core/src/provider_runtime_tests.rs
 new file mode 100644
-index 0000000000..b7387e3ed2
+index 0000000000..e09bf6a880
 --- /dev/null
 +++ b/codex-rs/core/src/provider_runtime_tests.rs
 @@ -0,0 +1,63 @@
@@ -1696,7 +1750,7 @@ index 0000000000..b7387e3ed2
 +        .get_model_info(selected.as_str(), &ModelsManagerConfig::default())
 +        .await;
 +
-+    assert_eq!(selected, "umich-toolkit::gpt-5.6-sol");
++    assert_eq!(selected, "umich-toolkit → gpt-5.6-sol");
 +    assert_eq!(info.slug, "gpt-5.6-sol");
 +
 +    let presets = manager
@@ -1705,7 +1759,7 @@ index 0000000000..b7387e3ed2
 +    assert!(
 +        presets
 +            .iter()
-+            .all(|preset| preset.model.starts_with("umich-toolkit::"))
++            .all(|preset| preset.model.starts_with("umich-toolkit → "))
 +    );
 +}
 +
@@ -1898,7 +1952,7 @@ index 66e0cf27ce..df79b39572 100644
                      if let Some(replacement_history) = &compacted.replacement_history {
                          // This should actually never happen, because the reverse loop above (to build rollout_suffix)
 diff --git a/codex-rs/core/src/session/rollout_reconstruction_tests.rs b/codex-rs/core/src/session/rollout_reconstruction_tests.rs
-index 4f8c6ceebd..1b053c95cb 100644
+index 4f8c6ceebd..11ba43527e 100644
 --- a/codex-rs/core/src/session/rollout_reconstruction_tests.rs
 +++ b/codex-rs/core/src/session/rollout_reconstruction_tests.rs
 @@ -10,6 +10,7 @@ use codex_history::InitialHistory;
@@ -1936,7 +1990,7 @@ index 4f8c6ceebd..1b053c95cb 100644
 +    let openai_settings = session.thread_settings_snapshot().await;
 +    let mut umich_settings = openai_settings.clone();
 +    umich_settings.model_provider_id = "umich-toolkit".to_string();
-+    umich_settings.model = "umich-toolkit::gpt-5.6-terra".to_string();
++    umich_settings.model = "umich-toolkit → gpt-5.6-terra".to_string();
 +    let mut resumed_config = (*turn_context.config).clone();
 +    resumed_config.model_provider_id = "umich-toolkit".to_string();
 +    turn_context.config = Arc::new(resumed_config);
@@ -1981,7 +2035,7 @@ index 4f8c6ceebd..1b053c95cb 100644
 +    let umich_settings = {
 +        let mut settings = session.thread_settings_snapshot().await;
 +        settings.model_provider_id = "umich-toolkit".to_string();
-+        settings.model = "umich-toolkit::gpt-5.6-terra".to_string();
++        settings.model = "umich-toolkit → gpt-5.6-terra".to_string();
 +        settings
 +    };
 +    let openai_settings = session.thread_settings_snapshot().await;
@@ -2160,7 +2214,7 @@ index ffbe0ebd19..6317f98597 100644
                  self.features.enabled(Feature::Personality),
                  self.features.enabled(Feature::FastMode),
 diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
-index 3889978a0a..e4dd38c500 100644
+index 3889978a0a..1aa8e4aa78 100644
 --- a/codex-rs/core/src/session/tests.rs
 +++ b/codex-rs/core/src/session/tests.rs
 @@ -50,6 +50,7 @@ use codex_login::auth::AgentIdentityAuthPolicy;
@@ -2237,7 +2291,7 @@ index 3889978a0a..e4dd38c500 100644
 +        .apply(
 +            &SessionSettingsUpdate {
 +                step_settings: StepSettingsUpdate {
-+                    model: Some("umich-toolkit::gpt-5.6-sol".to_string()),
++                    model: Some("umich-toolkit → gpt-5.6-sol".to_string()),
 +                    ..Default::default()
 +                },
 +                ..Default::default()
@@ -2251,7 +2305,7 @@ index 3889978a0a..e4dd38c500 100644
 +    );
 +    assert_eq!(
 +        updated.thread_settings_snapshot(&[]).model,
-+        "umich-toolkit::gpt-5.6-sol"
++        "umich-toolkit → gpt-5.6-sol"
 +    );
 +    assert_eq!(
 +        updated.thread_settings_snapshot(&[]).model_provider_id,
@@ -2264,7 +2318,7 @@ index 3889978a0a..e4dd38c500 100644
 +            .apply(
 +                &SessionSettingsUpdate {
 +                    step_settings: StepSettingsUpdate {
-+                        model: Some("not-configured::gpt-5.6-sol".to_string()),
++                        model: Some("not-configured → gpt-5.6-sol".to_string()),
 +                        ..Default::default()
 +                    },
 +                    ..Default::default()
@@ -2279,7 +2333,7 @@ index 3889978a0a..e4dd38c500 100644
 +            .apply(
 +                &SessionSettingsUpdate {
 +                    step_settings: StepSettingsUpdate {
-+                        model: Some("umich-toolkit::".to_string()),
++                        model: Some("umich-toolkit → ".to_string()),
 +                        ..Default::default()
 +                    },
 +                    ..Default::default()
@@ -2333,7 +2387,7 @@ index 3889978a0a..e4dd38c500 100644
 +    let commit = session
 +        .update_settings(SessionSettingsUpdate {
 +            step_settings: StepSettingsUpdate {
-+                model: Some("umich-toolkit::gpt-5.6-terra".to_string()),
++                model: Some("umich-toolkit → gpt-5.6-terra".to_string()),
 +                ..Default::default()
 +            },
 +            ..Default::default()
@@ -2749,10 +2803,19 @@ index 61a6240f9a..ba66bacee1 100644
                          .await,
                  ),
 diff --git a/codex-rs/model-provider-info/src/lib.rs b/codex-rs/model-provider-info/src/lib.rs
-index 65e2e4cbf7..a5de431d7e 100644
+index 65e2e4cbf7..b3486ff4b7 100644
 --- a/codex-rs/model-provider-info/src/lib.rs
 +++ b/codex-rs/model-provider-info/src/lib.rs
-@@ -58,6 +58,79 @@ const CHAT_WIRE_API_REMOVED_ERROR: &str = "`wire_api = \"chat\"` is no longer su
+@@ -37,6 +37,8 @@ const MAX_REQUEST_MAX_RETRIES: u64 = 100;
+ const OPENAI_PROVIDER_NAME: &str = "OpenAI";
+ const OPENAI_ACTOR_AUTHORIZATION_HEADER: &str = "x-openai-actor-authorization";
+ pub const OPENAI_PROVIDER_ID: &str = "openai";
++pub const QUALIFIED_MODEL_SEPARATOR: &str = " → ";
++const LEGACY_QUALIFIED_MODEL_SEPARATOR: &str = "::";
+ pub const CHATGPT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+ const AMAZON_BEDROCK_PROVIDER_NAME: &str = "Amazon Bedrock";
+ pub const AMAZON_BEDROCK_PROVIDER_ID: &str = "amazon-bedrock";
+@@ -58,6 +60,101 @@ const CHAT_WIRE_API_REMOVED_ERROR: &str = "`wire_api = \"chat\"` is no longer su
  pub const LEGACY_OLLAMA_CHAT_PROVIDER_ID: &str = "ollama-chat";
  pub const OLLAMA_CHAT_PROVIDER_REMOVED_ERROR: &str = "`ollama-chat` is no longer supported.\nHow to fix: replace `ollama-chat` with `ollama` in `model_provider`, `oss_provider`, or `--local-provider`.\nMore info: https://github.com/openai/codex/discussions/7782";
  
@@ -2772,9 +2835,9 @@ index 65e2e4cbf7..a5de431d7e 100644
 +/// Errors returned when a model selector looks qualified but is malformed.
 +#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 +pub enum QualifiedModelError {
-+    /// The provider portion before `::` is empty.
++    /// The provider portion before ` → ` is empty.
 +    EmptyProvider,
-+    /// The model portion after `::` is empty.
++    /// The model portion after ` → ` is empty.
 +    EmptyModel,
 +    /// The provider portion contains characters that cannot form a namespace.
 +    MalformedNamespace,
@@ -2786,7 +2849,7 @@ index 65e2e4cbf7..a5de431d7e 100644
 +            Self::EmptyProvider => "qualified model provider namespace must not be empty",
 +            Self::EmptyModel => "qualified model must not be empty after the provider namespace",
 +            Self::MalformedNamespace => {
-+                "qualified model provider namespace is malformed; use provider::model"
++                "qualified model provider namespace is malformed; use provider → model"
 +            }
 +        };
 +        f.write_str(message)
@@ -2797,16 +2860,21 @@ index 65e2e4cbf7..a5de431d7e 100644
 +
 +/// Parses an optional provider-qualified model selector.
 +///
-+/// Selectors without `::` return `Ok(None)` for backwards compatibility. For
-+/// qualified selectors, only the first `::` is significant, so model names may
-+/// contain `/` or additional `::` separators. Provider IDs must be non-empty,
-+/// contain no whitespace, `/`, `\\`, or `:` characters, and the wire model must
-+/// be non-empty. The parser never includes selector contents in an error so a
-+/// caller can safely surface parse failures without echoing sensitive input.
++/// Selectors without ` → ` return `Ok(None)` for backwards compatibility. The
++/// former `::` separator remains readable so persisted selectors can migrate.
++/// For qualified selectors, only the first separator is significant, so model
++/// names may contain `/` or additional separators. Provider IDs must be
++/// non-empty, contain no whitespace, `/`, `\\`, or `:` characters, and the wire
++/// model must be non-empty. The parser never includes selector contents in an
++/// error so a caller can safely surface parse failures without echoing
++/// sensitive input.
 +pub fn parse_qualified_model(
 +    selector: &str,
 +) -> Result<Option<QualifiedModel<'_>>, QualifiedModelError> {
-+    let Some((provider_id, wire_model)) = selector.split_once("::") else {
++    let Some((provider_id, wire_model)) = selector
++        .split_once(QUALIFIED_MODEL_SEPARATOR)
++        .or_else(|| selector.split_once(LEGACY_QUALIFIED_MODEL_SEPARATOR))
++    else {
 +        return Ok(None);
 +    };
 +
@@ -2829,25 +2897,50 @@ index 65e2e4cbf7..a5de431d7e 100644
 +    }))
 +}
 +
++/// Returns the canonical arrow-qualified spelling for a valid selector.
++pub fn canonicalize_qualified_model(selector: &str) -> Result<Option<String>, QualifiedModelError> {
++    parse_qualified_model(selector).map(|qualified| {
++        qualified.map(|qualified| {
++            format!(
++                "{}{QUALIFIED_MODEL_SEPARATOR}{}",
++                qualified.provider_id, qualified.wire_model
++            )
++        })
++    })
++}
++
++/// Joins a provider namespace and wire model using the canonical separator.
++pub fn format_qualified_model(provider_id: &str, wire_model: &str) -> String {
++    format!("{provider_id}{QUALIFIED_MODEL_SEPARATOR}{wire_model}")
++}
++
  /// Wire protocol that the provider speaks.
  #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, JsonSchema)]
  #[serde(rename_all = "lowercase")]
 diff --git a/codex-rs/model-provider-info/src/model_provider_info_tests.rs b/codex-rs/model-provider-info/src/model_provider_info_tests.rs
-index d08af0ffb5..803bdf4890 100644
+index d08af0ffb5..a6d915de72 100644
 --- a/codex-rs/model-provider-info/src/model_provider_info_tests.rs
 +++ b/codex-rs/model-provider-info/src/model_provider_info_tests.rs
-@@ -5,6 +5,45 @@ use pretty_assertions::assert_eq;
+@@ -5,6 +5,53 @@ use pretty_assertions::assert_eq;
  use std::num::NonZeroU64;
  use tempfile::tempdir;
  
 +#[test]
 +fn parse_qualified_model_splits_only_the_first_separator() {
 +    assert_eq!(
-+        parse_qualified_model("custom::models/gpt::latest").expect("selector should parse"),
++        parse_qualified_model("custom → models/gpt::latest").expect("selector should parse"),
 +        Some(QualifiedModel {
 +            provider_id: "custom",
 +            wire_model: "models/gpt::latest",
 +        })
++    );
++}
++
++#[test]
++fn canonicalize_qualified_model_migrates_the_legacy_separator() {
++    assert_eq!(
++        canonicalize_qualified_model("custom::gpt").expect("selector should parse"),
++        Some("custom → gpt".to_string())
 +    );
 +}
 +
@@ -2862,19 +2955,19 @@ index d08af0ffb5..803bdf4890 100644
 +#[test]
 +fn parse_qualified_model_rejects_empty_parts_and_malformed_namespaces() {
 +    assert_eq!(
-+        parse_qualified_model("::gpt").unwrap_err(),
++        parse_qualified_model(" → gpt").unwrap_err(),
 +        QualifiedModelError::EmptyProvider
 +    );
 +    assert_eq!(
-+        parse_qualified_model("custom::").unwrap_err(),
++        parse_qualified_model("custom → ").unwrap_err(),
 +        QualifiedModelError::EmptyModel
 +    );
 +    assert_eq!(
-+        parse_qualified_model("custom::   ").unwrap_err(),
++        parse_qualified_model("custom →    ").unwrap_err(),
 +        QualifiedModelError::EmptyModel
 +    );
 +    assert_eq!(
-+        parse_qualified_model("custom/provider::gpt").unwrap_err(),
++        parse_qualified_model("custom/provider → gpt").unwrap_err(),
 +        QualifiedModelError::MalformedNamespace
 +    );
 +}

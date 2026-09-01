@@ -569,7 +569,7 @@ class CliFlowTests(unittest.TestCase):
         manager.activate_dynamic()
 
         active = tomlkit.parse((home / "config.toml").read_text(encoding="utf-8"))
-        active["model"] = "teaching::gpt-5.6-terra"
+        active["model"] = "teaching → gpt-5.6-terra"
         (home / "config.toml").write_text(tomlkit.dumps(active), encoding="utf-8")
         manager.activate_openai()
 
@@ -577,11 +577,17 @@ class CliFlowTests(unittest.TestCase):
         self.assertNotIn("model", restored)
 
         active = tomlkit.parse((home / "config.toml").read_text(encoding="utf-8"))
-        active["model"] = "openai::gpt-5.6-sol"
+        active["model"] = "openai → gpt-5.6-sol"
         (home / "config.toml").write_text(tomlkit.dumps(active), encoding="utf-8")
         manager.activate_openai()
         restored = tomlkit.parse((home / "config.toml").read_text(encoding="utf-8"))
         self.assertEqual(restored["model"], "gpt-5.6-sol")
+
+        active["model"] = "openai::gpt-5.5"
+        (home / "config.toml").write_text(tomlkit.dumps(active), encoding="utf-8")
+        manager.activate_openai()
+        restored = tomlkit.parse((home / "config.toml").read_text(encoding="utf-8"))
+        self.assertEqual(restored["model"], "gpt-5.5")
 
     def test_run_requires_initialized_provider_layout(self) -> None:
         temporary, home = self.make_home()

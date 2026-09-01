@@ -28,7 +28,7 @@ Desktop and CLI remain clients of Codex Core. The patch changes provider/model r
 ```text
 Desktop or CLI
     |
-    | existing string model field: provider::model
+    | existing string model field: provider → model
     v
 Codex App Server / Core task
     |-- existing execution environment --> local or remote execution host
@@ -153,7 +153,7 @@ The first initialization snapshots the existing `config.toml` before activation.
 
 The tool owns only the routing fields it materializes: `model`, `model_provider`, `model_catalog_json`, and the selected provider table. Other settings and unrelated provider definitions are retained. An ambiguous routing edit is rejected rather than overwritten.
 
-Patched Core may persist a qualified model while Dynamic Picker is active. On a stock OpenAI launch, an `openai::` prefix is removed and an external-qualified model is omitted, allowing stock Core to choose a supported OpenAI default instead of sending an external namespace to ChatGPT.
+Patched Core may persist a qualified model while Dynamic Picker is active. On a stock OpenAI launch, the namespace is removed from an OpenAI-qualified model such as `openai → gpt-5.6-sol`; an external-qualified model is omitted, allowing stock Core to choose a supported OpenAI default instead of sending an external namespace to ChatGPT. The former `::` separator remains accepted as a migration input for existing persisted settings.
 
 `restore` activates the maintained OpenAI base. `restore --original` activates the immutable first-run snapshot. Backups are narrow and never recursively copy `CODEX_HOME`, so credentials, authentication, sessions, logs, skills, and plugins are not swept into recovery data.
 
@@ -166,11 +166,11 @@ Most new startup discovery logic is isolated in the added Core module `external_
 - load descriptors once while `Config` is constructed;
 - merge valid provider definitions and retain their static catalogs;
 - aggregate OpenAI and external catalogs for App Server `model/list`;
-- parse the first `::` in the existing string-valued model field;
+- parse the first ` → ` in the existing string-valued model field, with read compatibility for the former `::` separator;
 - resolve a provider-specific model manager/client at committed turn boundaries; and
 - persist and restore the selected provider with existing task settings.
 
-The picker displays and returns the same qualified value, for example `teaching::gpt-5.6-terra`. Core sends only `gpt-5.6-terra` to that provider. Unqualified models retain upstream behavior and use the task's current provider.
+The picker displays and returns the same qualified value, for example `teaching → gpt-5.6-terra`. Core sends only `gpt-5.6-terra` to that provider. Unqualified models retain upstream behavior and use the task's current provider.
 
 A user may change provider between completed turns without forking. Provider transport, authentication, sticky-routing state, and prompt-cache state are turn-scoped and rebuilt for the selected provider. Provider reasoning items can contain opaque state another provider cannot validate, so they are removed at a provider boundary while user, assistant, and tool history remain. Resume reconstructs the same boundaries from persisted settings.
 
@@ -211,7 +211,7 @@ This is an agent-invoked release check, not CI. Use a dedicated Linux VM account
 3. Run `codex-configure init` in that directory. Exercise either sign-in-later or an auth-only copy made from synthetic acceptance credentials, then add disposable low-budget Toolkit profiles with distinct exact names in one repeated provider loop. Confirm two descriptors, two catalogs, two distinct `.env` variables, mode `0600`, no key text outside `.env`, and no copied normal-home files other than the deliberately selected `auth.json`.
 4. Run the stdlib canary in `src/core-provider-model-picker/app_server_canary.py` once for each external provider. Supply the patched binary, isolated Codex home, provider short name, and an isolated task directory. The canary proves qualified catalog entries, OpenAI-to-external continuity in one task, and provider restoration after App Server restart without printing credentials.
 5. Start `codex-configure run desktop` with `CODEX_CLI_PATH` set to the unpacked draft candidate. For a graphics-limited VM, set `CODEX_DESKTOP_COMMAND='chatgpt --use-angle=swiftshader'`.
-6. In a private VM display, verify the real picker shows `openai::...` and both external namespaces. Make one exact-marker turn with OpenAI, change to each named provider between turns, return to OpenAI, restart Desktop, and resume the same task. Confirm the semantic markers survive and the last provider/model is restored.
+6. In a private VM display, verify the real picker shows `openai → ...` and both external namespaces. Make one exact-marker turn with OpenAI, change to each named provider between turns, return to OpenAI, restart Desktop, and resume the same task. Confirm the semantic markers survive and the last provider/model is restored.
 7. Run `run first/cli`, `run second/cli`, and `run openai/cli` with exact-marker prompts to cover stock Core profile launches. Confirm stock launches remove an inherited `CODEX_CLI_PATH`.
 8. Compare the normal Codex home's pre/post hashes and permissions. It must be unchanged. Retain only non-secret logs, task IDs, versions, and screenshots needed to identify the tested pin and desktop build.
 
@@ -244,7 +244,7 @@ A Desktop `GET /backend-api/accounts/.../settings` 401 with `Must use workspace 
 - Permit only an explicit, non-overwriting auth-only copy from a detected normal Codex home.
 - Keep the ordinary interface to read-only status, `init`, and `launch`; retain `run` as explicit advanced control.
 - Leave execution-host routing unchanged.
-- Keep provider/model in the existing string field as `provider::model`.
+- Keep provider/model in the existing string field as `provider → model`.
 - Allow provider changes only at committed turn boundaries.
 - Keep the desktop renderer and installed package unchanged.
 - Require complete static external catalogs.

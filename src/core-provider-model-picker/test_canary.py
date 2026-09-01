@@ -25,41 +25,41 @@ class CanaryLogicTests(unittest.TestCase):
         provider_id = "research-2026"
         result = {
             "data": [
-                {"id": "openai::gpt-5.6-sol", "model": "openai::gpt-5.6-sol"},
+                {"id": "openai → gpt-5.6-sol", "model": "openai → gpt-5.6-sol"},
                 {
-                    "id": f"{provider_id}::other-model",
-                    "model": f"{provider_id}::other-model",
+                    "id": f"{provider_id} → other-model",
+                    "model": f"{provider_id} → other-model",
                 },
                 {
-                    "id": f"{provider_id}::gpt-5.6-terra",
-                    "model": f"{provider_id}::gpt-5.6-terra",
+                    "id": f"{provider_id} → gpt-5.6-terra",
+                    "model": f"{provider_id} → gpt-5.6-terra",
                 },
             ]
         }
         self.assertEqual(
             canary.catalog_models(result, provider_id),
-            ("openai::gpt-5.6-sol", f"{provider_id}::gpt-5.6-terra"),
+            ("openai → gpt-5.6-sol", f"{provider_id} → gpt-5.6-terra"),
         )
 
     def test_catalog_falls_back_to_first_selectable_external_model(self) -> None:
         provider_id = "teaching"
         result = {
             "data": [
-                {"id": "openai::gpt-5.6-sol", "hidden": False},
-                {"id": f"{provider_id}::hidden", "hidden": True},
-                {"id": f"{provider_id}::first-selectable", "hidden": False},
-                {"id": f"{provider_id}::gpt-5.6-terra", "hidden": True},
+                {"id": "openai → gpt-5.6-sol", "hidden": False},
+                {"id": f"{provider_id} → hidden", "hidden": True},
+                {"id": f"{provider_id} → first-selectable", "hidden": False},
+                {"id": f"{provider_id} → gpt-5.6-terra", "hidden": True},
             ]
         }
         self.assertEqual(
             canary.catalog_models(result, provider_id),
-            ("openai::gpt-5.6-sol", f"{provider_id}::first-selectable"),
+            ("openai → gpt-5.6-sol", f"{provider_id} → first-selectable"),
         )
 
     def test_catalog_rejects_unqualified_or_wrong_namespace_entries(self) -> None:
         with self.assertRaises(canary.CanaryError):
             canary.catalog_models(
-                {"data": [{"id": "gpt-5.6-sol"}, {"id": "other::gpt-5.6-terra"}]},
+                {"data": [{"id": "gpt-5.6-sol"}, {"id": "other → gpt-5.6-terra"}]},
                 "research",
             )
 
@@ -68,7 +68,7 @@ class CanaryLogicTests(unittest.TestCase):
         with self.assertRaises(canary.CanaryError):
             canary.validate_provider_id("openai")
         with self.assertRaises(canary.CanaryError):
-            canary.validate_provider_id("research::model")
+            canary.validate_provider_id("research → model")
 
     def test_completed_marker_checks_task_continuity_and_exact_text(self) -> None:
         notification = {
@@ -100,7 +100,7 @@ class CanaryLogicTests(unittest.TestCase):
 
     def test_resume_requires_same_task_and_qualified_provider_selection(self) -> None:
         provider_id = "research"
-        external_model = f"{provider_id}::gpt-5.6-terra"
+        external_model = f"{provider_id} → gpt-5.6-terra"
         result = {
             "thread": {"id": "task-1"},
             "model": external_model,

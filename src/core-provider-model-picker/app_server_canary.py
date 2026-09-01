@@ -26,6 +26,7 @@ from typing import Any, Mapping
 OPENAI_MARKER = "CANARY_OPENAI_OK"
 EXTERNAL_MARKER = "CANARY_EXTERNAL_OK"
 PREFERRED_EXTERNAL_MODEL = "gpt-5.6-terra"
+QUALIFIED_MODEL_SEPARATOR = " → "
 _PROVIDER_ID_RE = re.compile(r"^[a-z0-9]+(?:[-_][a-z0-9]+)*$")
 
 
@@ -102,7 +103,7 @@ def _is_selectable(entry: Mapping[str, Any]) -> bool:
 
 
 def _qualified_values(entry: Mapping[str, Any], provider_id: str) -> tuple[str, ...]:
-    prefix = f"{provider_id}::"
+    prefix = f"{provider_id}{QUALIFIED_MODEL_SEPARATOR}"
     return tuple(value for value in _field_strings(entry) if value.startswith(prefix) and value != prefix)
 
 
@@ -122,14 +123,19 @@ def catalog_models(result: Mapping[str, Any], provider_id: str) -> tuple[str, st
     openai_model: str | None = None
     external_model: str | None = None
     first_external_model: str | None = None
-    preferred = f"{provider_id}::{PREFERRED_EXTERNAL_MODEL}"
+    preferred = f"{provider_id}{QUALIFIED_MODEL_SEPARATOR}{PREFERRED_EXTERNAL_MODEL}"
     for item in data:
         if not isinstance(item, dict):
             continue
         values = _field_strings(item)
         if openai_model is None and _is_selectable(item):
             openai_model = next(
-                (value for value in values if value.startswith("openai::") and value != "openai::"),
+                (
+                    value
+                    for value in values
+                    if value.startswith(f"openai{QUALIFIED_MODEL_SEPARATOR}")
+                    and value != f"openai{QUALIFIED_MODEL_SEPARATOR}"
+                ),
                 None,
             )
         if _is_selectable(item):
