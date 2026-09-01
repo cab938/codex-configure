@@ -17,6 +17,8 @@ from .errors import UserFacingError
 from .launch_context import (
     LaunchContext,
     LaunchSettings,
+    chrome_extension_installed,
+    chrome_native_host_registered,
     copy_openai_auth,
     initialize_root,
     launch_chrome,
@@ -437,6 +439,26 @@ def _credential_values(
     }
 
 
+def _dynamic_credentials(
+    manager: ConfigManager,
+    environ: Mapping[str, str],
+) -> dict[str, str]:
+    descriptors = _profiles(manager)
+    values = manager.load_credentials(environ)
+    missing = [item.id for item in descriptors if item.env_key and not values.get(item.env_key)]
+    if missing:
+        raise UserFacingError(
+            "Missing credentials for configured provider(s): "
+            + ", ".join(missing)
+            + ". Run `codex-configure init` to initialize each provider."
+        )
+    return {
+        item.env_key: values[item.env_key]
+        for item in descriptors
+        if item.env_key
+    }
+
+
 def _detected_openai_auth_home(
     source_home: Path,
     target_home: Path,
@@ -728,21 +750,8 @@ def run_run(
         if app == "cli"
         else [*launcher.validate("desktop", requires_environment=True), *app_args]
     )
-    descriptors = _profiles(manager)
-    values = manager.load_credentials(environ)
-    missing = [item.id for item in descriptors if item.env_key and not values.get(item.env_key)]
-    if missing:
-        raise UserFacingError(
-            "Missing credentials for configured provider(s): "
-            + ", ".join(missing)
-            + ". Run `codex-configure init` to initialize each provider."
-        )
+    credentials = _dynamic_credentials(manager, environ)
     active_profile = manager.activate_dynamic()
-    credentials = {
-        item.env_key: values[item.env_key]
-        for item in descriptors
-        if item.env_key
-    }
     if app == "cli":
         child_environment = credentials
     else:
@@ -1065,7 +1074,69 @@ def run_launch_context(
     if context.root is not None:
         console.write(f"Launch root: {context.root}")
     if target == "chrome":
-        return launch_chrome(context, app_args, child_environment)
+        manager = ConfigManager(context.codex_home)
+        manager.require_initialized()
+        if context.settings.core == "dynamic":
+            if sys.platform not in {"linux", "darwin"}:
+                raise UserFacingError(
+                    "The dynamic provider picker is supported on Linux and macOS."
+                )
+            child_environment.update(_dynamic_credentials(manager, child_environment))
+            binary = _patched_binary(
+                child_environment,
+                context.root,
+            )
+            child_environment["CODEX_CLI_PATH"] = binary
+            console.write(f"Chrome native host Core: {binary}")
+        else:
+            child_environment.pop("CODEX_CLI_PATH", None)
+            if context.settings.provider != "openai":
+                try:
+                    descriptor = manager.get_provider(context.settings.provider)
+                except UserFacingError as exc:
+                    available = ", ".join(
+                        ["openai", *(item.id for item in _profiles(manager))]
+                    )
+                    raise UserFacingError(
+                        f"Unknown model provider `{context.settings.provider}`. "
+                        f"Available providers: {available}."
+                    ) from exc
+                credentials = _credential_values(
+                    manager,
+                    child_environment,
+                    context.settings.provider,
+                )
+                if not credentials:
+                    raise UserFacingError(
+                        f"No credential found for `{context.settings.provider}` "
+                        f"({descriptor.env_key}). Initialize it with `codex-configure init`."
+                    )
+                child_environment.update(credentials)
+            console.write("Chrome native host Core: stock")
+
+        needs_extension = not chrome_extension_installed(context)
+        if needs_extension:
+            console.write(
+                "The ChatGPT extension is not installed in this root's isolated "
+                "Chrome profile."
+            )
+            console.write(
+                "Opening its Chrome Web Store page; review and accept Chrome's "
+                "permission prompt to install it."
+            )
+        if sys.platform == "linux" and not chrome_native_host_registered(context):
+            console.write(
+                "The root-scoped Chrome native host is not registered yet. Launch "
+                "Desktop from this root, then use Settings > Computer Use > Chrome "
+                "to install the required plugin."
+            )
+        console.write("Launching the isolated Chrome profile...")
+        return launch_chrome(
+            context,
+            app_args,
+            child_environment,
+            open_extension_store=needs_extension,
+        )
     run_target = (
         target
         if context.settings.core == "dynamic"

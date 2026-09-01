@@ -11,9 +11,14 @@ from unittest import mock
 from codex_configure.cli import Console, run_init_command, run_launch, run_launch_context, run_status
 from codex_configure.errors import UserFacingError
 from codex_configure.launch_context import (
+    CHATGPT_CHROME_EXTENSION_ID,
+    CHATGPT_CHROME_EXTENSION_STORE_URL,
     LaunchSettings,
+    chrome_extension_installed,
+    chrome_native_host_registered,
     copy_openai_auth,
     initialize_root,
+    launch_chrome,
     load_launch_context,
     rooted_environment,
     write_launch_configuration,
@@ -41,6 +46,7 @@ class LaunchRootTests(unittest.TestCase):
                 {
                     "PATH": "/usr/bin",
                     "CODEX_CONFIGURE_RUNTIME_ROOT": str(short_runtime),
+                    "CODEX_CHROME_NATIVE_HOSTS_MANIFEST": "/stale/manifest.json",
                 },
             )
 
@@ -50,9 +56,15 @@ class LaunchRootTests(unittest.TestCase):
             self.assertEqual(environment["XDG_CONFIG_HOME"], str(context.state_dir / "xdg" / "config"))
             self.assertEqual(environment["XDG_RUNTIME_DIR"], str(short_runtime / "xdg"))
             self.assertEqual(environment["TMPDIR"], str(short_runtime / "tmp"))
+            chrome_profile = context.state_dir / "chrome" / "profile"
             self.assertEqual(
-                environment["CODEX_CHROME_NATIVE_HOSTS_MANIFEST"],
-                str(context.state_dir / "chrome" / "chrome-native-hosts-v2.json"),
+                environment["CODEX_CHROME_USER_DATA_DIR"],
+                str(chrome_profile),
+            )
+            self.assertEqual(environment["CODEX_CHROMIUM_USER_DATA_DIR"], str(chrome_profile))
+            self.assertNotIn("CODEX_CHROME_NATIVE_HOSTS_MANIFEST", environment)
+            self.assertFalse(
+                (context.state_dir / "chrome" / "chrome-native-hosts-v2.json").exists()
             )
             self.assertTrue((context.state_dir / "root.toml").is_file())
             self.assertEqual(
@@ -61,6 +73,81 @@ class LaunchRootTests(unittest.TestCase):
             )
             self.assertEqual(stat.S_IMODE((context.state_dir / "xdg").stat().st_mode), 0o700)
             self.assertEqual(stat.S_IMODE((context.state_dir / "chrome").stat().st_mode), 0o700)
+
+    def test_chrome_setup_artifacts_are_detected_in_the_isolated_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "project"
+            root.mkdir()
+            context = initialize_root(root)
+
+            self.assertFalse(chrome_extension_installed(context))
+            self.assertFalse(chrome_native_host_registered(context))
+
+            extension = (
+                context.state_dir
+                / "chrome"
+                / "profile"
+                / "Default"
+                / "Extensions"
+                / CHATGPT_CHROME_EXTENSION_ID
+                / "1.0.0_0"
+            )
+            extension.mkdir(parents=True)
+            (extension / "manifest.json").write_text("{}\n", encoding="utf-8")
+            native_host = (
+                context.state_dir
+                / "xdg"
+                / "config"
+                / "google-chrome"
+                / "NativeMessagingHosts"
+                / "com.openai.codexextension.json"
+            )
+            native_host.parent.mkdir(parents=True)
+            native_host.write_text("{}\n", encoding="utf-8")
+
+            self.assertTrue(chrome_extension_installed(context))
+            self.assertTrue(chrome_native_host_registered(context))
+
+    @mock.patch("codex_configure.launch_context.subprocess.Popen")
+    def test_chrome_launch_opens_store_and_preserves_native_host_environment(
+        self,
+        popen: mock.Mock,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "project"
+            root.mkdir()
+            context = initialize_root(root)
+            runtime = Path(temporary) / "runtime"
+
+            result = launch_chrome(
+                context,
+                ("--new-window",),
+                {
+                    "CODEX_CHROME_COMMAND": '"/opt/Fake Chrome/chrome" --test-switch',
+                    "CODEX_CONFIGURE_RUNTIME_ROOT": str(runtime),
+                    "CODEX_CLI_PATH": "/opt/patched/codex",
+                    "TEACHING_API_KEY": "test-secret",
+                },
+                open_extension_store=True,
+            )
+
+            self.assertEqual(result, 0)
+            command = popen.call_args.args[0]
+            child_environment = popen.call_args.kwargs["env"]
+            self.assertEqual(
+                command,
+                [
+                    "/opt/Fake Chrome/chrome",
+                    "--test-switch",
+                    f"--user-data-dir={context.state_dir / 'chrome' / 'profile'}",
+                    "--new-window",
+                    CHATGPT_CHROME_EXTENSION_STORE_URL,
+                ],
+            )
+            self.assertEqual(child_environment["CODEX_CLI_PATH"], "/opt/patched/codex")
+            self.assertEqual(child_environment["TEACHING_API_KEY"], "test-secret")
+            self.assertEqual(child_environment["HOME"], str(context.state_dir / "chrome" / "home"))
+            self.assertTrue(popen.call_args.kwargs["start_new_session"])
 
     def test_init_can_create_an_openai_only_launch_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -308,6 +395,108 @@ class LaunchRootTests(unittest.TestCase):
             child_environment = run.call_args.args[3]
             self.assertEqual(child_environment["PWD"], "/callers/workspace")
             self.assertEqual(child_environment["CODEX_HOME"], str(context.codex_home))
+
+    def test_dynamic_chrome_launch_injects_core_credentials_and_setup_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "project"
+            root.mkdir()
+            context = initialize_root(root)
+            (context.codex_home / "config.toml").write_text(
+                'model = "gpt-5.5"\n',
+                encoding="utf-8",
+            )
+            manager = ConfigManager(context.codex_home)
+            manager.save_umich_provider(
+                "teaching",
+                "stored-secret",
+                {"models": [{"slug": "gpt-5.6-terra"}]},
+                selected_models=["gpt-5.6-terra"],
+                default_model="gpt-5.6-terra",
+            )
+            write_launch_configuration(
+                context.state_dir,
+                context.codex_home,
+                LaunchSettings("dynamic", "openai"),
+                root=True,
+            )
+            before = (context.codex_home / "config.toml").read_text(encoding="utf-8")
+            output = io.StringIO()
+
+            with (
+                mock.patch(
+                    "codex_configure.cli._patched_binary",
+                    return_value="/opt/patched/codex",
+                ),
+                mock.patch(
+                    "codex_configure.cli.chrome_extension_installed",
+                    return_value=False,
+                ),
+                mock.patch(
+                    "codex_configure.cli.chrome_native_host_registered",
+                    return_value=False,
+                ),
+                mock.patch("codex_configure.cli.launch_chrome", return_value=0) as launch,
+            ):
+                result = run_launch_context(
+                    context.state_dir,
+                    ("chrome",),
+                    Console(io.StringIO(), output),
+                    {"PATH": "/usr/bin"},
+                )
+
+            self.assertEqual(result, 0)
+            child_environment = launch.call_args.args[2]
+            self.assertEqual(child_environment["CODEX_CLI_PATH"], "/opt/patched/codex")
+            self.assertEqual(child_environment["TEACHING_API_KEY"], "stored-secret")
+            self.assertEqual(
+                child_environment["CODEX_CHROME_USER_DATA_DIR"],
+                str(context.state_dir / "chrome" / "profile"),
+            )
+            self.assertTrue(launch.call_args.kwargs["open_extension_store"])
+            self.assertEqual(
+                (context.codex_home / "config.toml").read_text(encoding="utf-8"),
+                before,
+            )
+            self.assertIn("Chrome Web Store", output.getvalue())
+            self.assertIn("Settings > Computer Use > Chrome", output.getvalue())
+
+    def test_stock_chrome_launch_removes_an_inherited_patched_core(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "project"
+            root.mkdir()
+            context = initialize_root(root)
+            ConfigManager(context.codex_home).initialize()
+            write_launch_configuration(
+                context.state_dir,
+                context.codex_home,
+                LaunchSettings("stock", "openai"),
+                root=True,
+            )
+
+            with (
+                mock.patch(
+                    "codex_configure.cli.chrome_extension_installed",
+                    return_value=True,
+                ),
+                mock.patch(
+                    "codex_configure.cli.chrome_native_host_registered",
+                    return_value=True,
+                ),
+                mock.patch("codex_configure.cli.launch_chrome", return_value=0) as launch,
+            ):
+                result = run_launch_context(
+                    context.state_dir,
+                    ("chrome",),
+                    Console(io.StringIO(), io.StringIO()),
+                    {
+                        "PATH": "/usr/bin",
+                        "CODEX_CLI_PATH": "/wrong/patched/codex",
+                    },
+                )
+
+            self.assertEqual(result, 0)
+            self.assertNotIn("CODEX_CLI_PATH", launch.call_args.args[2])
+            self.assertFalse(launch.call_args.kwargs["open_extension_store"])
 
 
 if __name__ == "__main__":

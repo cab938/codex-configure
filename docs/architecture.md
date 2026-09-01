@@ -14,7 +14,7 @@ It deliberately provides two operating modes.
 | Invocation | Core | Provider choice |
 | --- | --- | --- |
 | `launch [desktop|cli]` | Configured default | Configured default |
-| `launch chrome` | N/A | Isolated root browser profile |
+| `launch chrome` | Configured Core in the extension native host | Configured fixed provider or Dynamic Picker |
 | `run openai/cli` or `run openai/desktop` | Stock | OpenAI fixed for that launch |
 | `run name/cli` or `run name/desktop` | Stock | Named U-M service fixed for that launch |
 | `run cli` or `run desktop` | Patched | Qualified provider/model in the existing picker |
@@ -23,10 +23,10 @@ Bare `codex-configure` is a read-only status operation. `init` owns context crea
 
 ## System Boundary
 
-Desktop and CLI remain clients of Codex Core. The patch changes provider/model routing, not execution-host routing:
+Desktop, CLI, and the Chrome extension native host remain clients of Codex Core. The patch changes provider/model routing, not execution-host routing:
 
 ```text
-Desktop or CLI
+Desktop, CLI, or Chrome extension native host
     |
     | existing string model field: provider → model
     v
@@ -54,10 +54,22 @@ ROOT/.codex-configure/
 |-- codex-core/                       # default patched source checkout, when requested
 |-- xdg/{config,data,state,cache}/
 |-- electron-user-data/
-`-- chrome/{home,profile,chrome-native-hosts-v2.json}
+`-- chrome/{home,profile}
 ```
 
 The caller's `PWD` remains the task workspace. Runtime sockets and temporary files use a short private path under `/run/user/$UID/codex-configure/<root-hash>/`, falling back to `/tmp/codex-configure-$UID/<root-hash>/`. This is configuration, identity, and binary isolation rather than a security boundary.
+
+`CODEX_CHROME_USER_DATA_DIR` and `CODEX_CHROMIUM_USER_DATA_DIR` identify the root's isolated browser profile to current Desktop and browser integration code. On a Dynamic Picker Chrome launch, `CODEX_CLI_PATH` and all configured provider credentials are inherited by the browser extension's native host. Stock Chrome launches remove `CODEX_CLI_PATH` and expose at most the configured fixed provider's key.
+
+The Desktop plugin lifecycle, not `codex-configure`, owns native-host installation. On Linux it materializes the Chrome registration below rooted `XDG_CONFIG_HOME` and routing manifests below rooted `XDG_STATE_HOME` and `CODEX_HOME`:
+
+```text
+xdg/config/google-chrome/NativeMessagingHosts/com.openai.codexextension.json
+xdg/state/openai-codex/chrome-native-hosts-v2.json
+codex-home/chrome-native-hosts-v2.json
+```
+
+`codex-configure` detects these artifacts for setup guidance but does not fabricate them. It also detects the stable ChatGPT extension in the isolated profile and opens the official Chrome Web Store listing while it is absent. Browser permission acceptance remains a user action. The former empty `chrome/chrome-native-hosts-v2.json` placeholder is neither created nor exported as authoritative state; an existing copy is left untouched and ignored.
 
 A launch root starts with an empty Codex home and isolated desktop state. During setup, a successful `codex login status` against normal `~/.codex` enables an explicit auth-only copy action. That action validates and atomically creates only `auth.json` at mode `0600`; it refuses symlinks and an existing destination. Tasks, settings, skills, plugins, sessions, U-M keys, and other files are never copied.
 
@@ -137,7 +149,7 @@ OpenAI authentication remains under Codex's ownership. This project may copy a v
 
 Named keys live in `$CODEX_HOME/codex-configure/.env`. An explicitly exported variable with the descriptor's exact name overrides its stored value for that process. Credential loading is filtered to names declared by installed descriptors; unrelated API keys from the shell are not copied into the tool's credential map.
 
-A stock OpenAI child receives no U-M credentials. A stock named-provider child receives only its key. A Dynamic Picker child receives the keys for all providers it exposes and refuses to launch if one is missing. Secrets are never written into active configuration, descriptors, catalogs, profiles, backups, diagnostics, patch resources, or canary output.
+A stock OpenAI child receives no U-M credentials. A stock named-provider child receives only its key. A Dynamic Picker child receives the keys for all providers it exposes and refuses to launch if one is missing. The same rule applies to Chrome so its native host can authenticate without writing keys into browser or host manifests. Secrets are never written into active configuration, descriptors, catalogs, profiles, backups, diagnostics, patch resources, or canary output.
 
 ## Activation And Recovery
 
@@ -240,6 +252,7 @@ A Desktop `GET /backend-api/accounts/.../settings` 401 with `Must use workspace 
 - Resolve ordinary commands only from the exact current directory; provide no global or parent fallback.
 - Recognize roots by `root.toml`, not by `.codex-configure` directory presence.
 - Preserve the caller's working directory and isolate persistent Codex, XDG, Electron, and browser state under the root.
+- Let Desktop own Chrome native-host registration; pass the configured Core and bounded credentials through the isolated Chrome process environment.
 - Keep installed and source-built Dynamic Core binaries inside their owning project root for complete project-local removal.
 - Permit only an explicit, non-overwriting auth-only copy from a detected normal Codex home.
 - Keep the ordinary interface to read-only status, `init`, and `launch`; retain `run` as explicit advanced control.

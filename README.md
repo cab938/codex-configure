@@ -109,11 +109,32 @@ ROOT/.codex-configure/
 |-- electron-user-data/
 `-- chrome/
     |-- home/
-    |-- profile/
-    `-- chrome-native-hosts-v2.json
+    `-- profile/
 ```
 
-Short-lived socket and temporary paths use `/run/user/$UID/codex-configure/<root-id>/` when available, with a private `/tmp` fallback. This is configuration and binary isolation, not a hard filesystem or security boundary. Each launch root has independent state and can either receive an auth-only copy during setup or be signed in independently. `launch chrome` starts Chrome or Chromium with the root's isolated browser home and profile; it does not claim full browser/native-host integration on every Codex Desktop build.
+Short-lived socket and temporary paths use `/run/user/$UID/codex-configure/<root-id>/` when available, with a private `/tmp` fallback. This is configuration and binary isolation, not a hard filesystem or security boundary. Each launch root has independent state and can either receive an auth-only copy during setup or be signed in independently.
+
+`launch chrome` starts Chrome or Chromium with the root's isolated browser home and profile. Desktop and Chrome both receive `CODEX_CHROME_USER_DATA_DIR` for that profile. A Dynamic Picker launch also passes the root's patched `CODEX_CLI_PATH` and every configured provider credential into Chrome, where the extension's native host inherits them. A stock launch removes an inherited patched-Core path and passes only the selected external provider's credential, if any. The command does not change the active Codex configuration.
+
+### Chrome Extension Setup
+
+The browser extension and its native host require one user-reviewed setup for each isolated root:
+
+1. Run `codex-configure launch desktop` from the root. In Desktop, open **Settings > Computer Use > Chrome** and follow the prompt to install the required plugin.
+2. Run `codex-configure launch chrome`. If this profile does not contain the ChatGPT extension, the command opens its official Chrome Web Store page. Select **Add to Chrome** and review the permissions yourself.
+3. Return to Desktop and confirm Chrome shows **Manage**, then use Chrome from the `@`-mention menu. Keep using the profile opened by `codex-configure launch chrome`.
+
+This follows OpenAI's [browser-extension setup](https://learn.chatgpt.com/docs/chrome-extension), including the requirement to install the extension in the active profile and accept the browser's permission prompt. The launcher cannot silently accept those permissions.
+
+On Linux, current Desktop builds put the root-scoped native-host registration and routing state at:
+
+```text
+ROOT/.codex-configure/xdg/config/google-chrome/NativeMessagingHosts/com.openai.codexextension.json
+ROOT/.codex-configure/xdg/state/openai-codex/chrome-native-hosts-v2.json
+ROOT/.codex-configure/codex-home/chrome-native-hosts-v2.json
+```
+
+Older roots may retain `chrome/chrome-native-hosts-v2.json`; that empty compatibility placeholder is no longer created or advertised as active routing state. If isolated Chrome was already running before an environment or Core change, close that Chrome process once and relaunch it so its native host inherits the new environment.
 
 ## Stock Core: Fixed Provider
 

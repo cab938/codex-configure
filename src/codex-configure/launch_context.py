@@ -24,6 +24,12 @@ ROOT_KIND = "codex-configure-launch-root"
 LAUNCH_KIND = "codex-configure-launch"
 STATE_DIRECTORY = ".codex-configure"
 MAX_AUTH_FILE_BYTES = 16 * 1024 * 1024
+CHATGPT_CHROME_EXTENSION_ID = "hehggadaopoacecdllhhajmbjkdcmajg"
+CHATGPT_CHROME_EXTENSION_STORE_URL = (
+    "https://chromewebstore.google.com/detail/chatgpt/"
+    f"{CHATGPT_CHROME_EXTENSION_ID}"
+)
+CHROME_NATIVE_HOST_NAME = "com.openai.codexextension"
 
 
 @dataclass(frozen=True)
@@ -246,9 +252,6 @@ def initialize_root(root: Path) -> LaunchContext:
             f'schema_version = {SCHEMA_VERSION}\nkind = "{ROOT_KIND}"\n',
             0o600,
         )
-    manifest = state_dir / "chrome" / "chrome-native-hosts-v2.json"
-    if not manifest.exists():
-        _write_managed(manifest, '{\n  "schemaVersion": 2,\n  "entries": []\n}\n', 0o600)
     launcher = state_dir / "launch.sh"
     if not launcher.exists():
         _write_managed(launcher, _launcher_text(), 0o700)
@@ -331,7 +334,8 @@ def rooted_environment(context: LaunchContext, environ: Mapping[str, str]) -> di
         "XDG_CACHE_HOME": state / "xdg" / "cache",
         "XDG_RUNTIME_DIR": runtime_root / "xdg",
         "CODEX_ELECTRON_USER_DATA_DIR": state / "electron-user-data",
-        "CODEX_CHROME_NATIVE_HOSTS_MANIFEST": state / "chrome" / "chrome-native-hosts-v2.json",
+        "CODEX_CHROME_USER_DATA_DIR": state / "chrome" / "profile",
+        "CODEX_CHROMIUM_USER_DATA_DIR": state / "chrome" / "profile",
         "CODEX_CONFIGURE_CHROME_HOME": state / "chrome" / "home",
         "CODEX_CONFIGURE_CHROME_USER_DATA_DIR": state / "chrome" / "profile",
         "CODEX_ISOLATED_CHROME_HOME": state / "chrome" / "home",
@@ -353,13 +357,59 @@ def rooted_environment(context: LaunchContext, environ: Mapping[str, str]) -> di
     child.pop("CODEX_MULTI_LAUNCH", None)
     child.pop("CODEX_LINUX_MULTI_LAUNCH", None)
     child.pop("CODEX_MULTI_LAUNCH_PORT_RANGE", None)
+    child.pop("CODEX_CHROME_NATIVE_HOSTS_MANIFEST", None)
     return child
+
+
+def chrome_extension_installed(context: LaunchContext) -> bool:
+    """Whether the ChatGPT extension is present in any isolated Chrome profile."""
+
+    if context.root is None:
+        return False
+    user_data = context.state_dir / "chrome" / "profile"
+    try:
+        browser_profiles = tuple(user_data.iterdir())
+    except OSError:
+        return False
+    for browser_profile in browser_profiles:
+        extension_root = (
+            browser_profile / "Extensions" / CHATGPT_CHROME_EXTENSION_ID
+        )
+        if not extension_root.is_dir():
+            continue
+        try:
+            versions = tuple(extension_root.iterdir())
+        except OSError:
+            continue
+        if any((version / "manifest.json").is_file() for version in versions):
+            return True
+    return False
+
+
+def chrome_native_host_registered(context: LaunchContext) -> bool:
+    """Whether Desktop registered the extension host in the rooted Linux config."""
+
+    if context.root is None:
+        return False
+    config_home = context.state_dir / "xdg" / "config"
+    manifest_name = f"{CHROME_NATIVE_HOST_NAME}.json"
+    return any(
+        (
+            config_home
+            / browser
+            / "NativeMessagingHosts"
+            / manifest_name
+        ).is_file()
+        for browser in ("google-chrome", "chromium")
+    )
 
 
 def launch_chrome(
     context: LaunchContext,
     args: Sequence[str],
     environ: Mapping[str, str],
+    *,
+    open_extension_store: bool = False,
 ) -> int:
     if context.root is None:
         raise UserFacingError("The Chrome target is available only in a launch root.")
@@ -390,5 +440,7 @@ def launch_chrome(
     child["HOME"] = str(context.state_dir / "chrome" / "home")
     profile = context.state_dir / "chrome" / "profile"
     command = [*command, f"--user-data-dir={profile}", *args]
+    if open_extension_store and CHATGPT_CHROME_EXTENSION_STORE_URL not in args:
+        command.append(CHATGPT_CHROME_EXTENSION_STORE_URL)
     subprocess.Popen(command, env=child, start_new_session=True)
     return 0
