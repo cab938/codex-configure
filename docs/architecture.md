@@ -54,7 +54,7 @@ ROOT/.codex-configure/
 |-- codex-core/                       # default patched source checkout, when requested
 |-- xdg/{config,data,state,cache}/
 |-- electron-user-data/
-`-- chrome/{home,profile}
+`-- chrome/{home,profile}              # profile receives the validated host manifest
 ```
 
 The caller's `PWD` remains the task workspace. Runtime sockets and temporary files use a short private path under `/run/user/$UID/codex-configure/<root-hash>/`, falling back to `/tmp/codex-configure-$UID/<root-hash>/`. This is configuration, identity, and binary isolation rather than a security boundary.
@@ -67,9 +67,10 @@ The Desktop plugin lifecycle, not `codex-configure`, owns native-host installati
 xdg/config/google-chrome/NativeMessagingHosts/com.openai.codexextension.json
 xdg/state/openai-codex/chrome-native-hosts-v2.json
 codex-home/chrome-native-hosts-v2.json
+chrome/profile/NativeMessagingHosts/com.openai.codexextension.json
 ```
 
-`codex-configure` detects these artifacts for setup guidance but does not fabricate them. It also detects the stable ChatGPT extension in the isolated profile and opens the official Chrome Web Store listing while it is absent. Browser permission acceptance remains a user action. The former empty `chrome/chrome-native-hosts-v2.json` placeholder is neither created nor exported as authoritative state; an existing copy is left untouched and ignored.
+Desktop creates the first three artifacts. Before launching Chrome with its explicit custom user-data directory, `codex-configure` validates Desktop's native-host registration and atomically mirrors that exact manifest to the fourth path, where custom-profile Chrome resolves it. It does not fabricate plugin or routing state. It also detects the stable ChatGPT extension in the isolated profile and opens the official Chrome Web Store listing while it is absent. Browser permission acceptance remains a user action. The former empty `chrome/chrome-native-hosts-v2.json` placeholder is neither created nor exported as authoritative state; an existing copy is left untouched and ignored.
 
 A launch root starts with an empty Codex home and isolated desktop state. During setup, a successful `codex login status` against normal `~/.codex` enables an explicit auth-only copy action. That action validates and atomically creates only `auth.json` at mode `0600`; it refuses symlinks and an existing destination. Tasks, settings, skills, plugins, sessions, U-M keys, and other files are never copied.
 

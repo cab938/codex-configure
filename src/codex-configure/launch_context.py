@@ -30,6 +30,7 @@ CHATGPT_CHROME_EXTENSION_STORE_URL = (
     f"{CHATGPT_CHROME_EXTENSION_ID}"
 )
 CHROME_NATIVE_HOST_NAME = "com.openai.codexextension"
+CHROME_NATIVE_HOST_ORIGIN = f"chrome-extension://{CHATGPT_CHROME_EXTENSION_ID}/"
 
 
 @dataclass(frozen=True)
@@ -386,22 +387,84 @@ def chrome_extension_installed(context: LaunchContext) -> bool:
     return False
 
 
+def _chrome_native_host_manifest(context: LaunchContext) -> Path:
+    return (
+        context.state_dir
+        / "chrome"
+        / "profile"
+        / "NativeMessagingHosts"
+        / f"{CHROME_NATIVE_HOST_NAME}.json"
+    )
+
+
+def _valid_chrome_native_host_manifest(path: Path) -> str | None:
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        payload = path.read_text(encoding="utf-8")
+        document = json.loads(payload)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(document, dict):
+        return None
+    executable = document.get("path")
+    allowed_origins = document.get("allowed_origins")
+    if (
+        document.get("name") != CHROME_NATIVE_HOST_NAME
+        or document.get("type") != "stdio"
+        or not isinstance(executable, str)
+        or not Path(executable).is_absolute()
+        or not Path(executable).is_file()
+        or not os.access(executable, os.X_OK)
+        or not isinstance(allowed_origins, list)
+        or CHROME_NATIVE_HOST_ORIGIN not in allowed_origins
+    ):
+        return None
+    return payload
+
+
 def chrome_native_host_registered(context: LaunchContext) -> bool:
-    """Whether Desktop registered the extension host in the rooted Linux config."""
+    """Whether isolated Chrome can resolve the rooted native host."""
+
+    if context.root is None:
+        return False
+    return _valid_chrome_native_host_manifest(
+        _chrome_native_host_manifest(context)
+    ) is not None
+
+
+def sync_chrome_native_host_manifest(context: LaunchContext) -> bool:
+    """Mirror Desktop's native-host manifest into Chrome's custom user-data dir."""
 
     if context.root is None:
         return False
     config_home = context.state_dir / "xdg" / "config"
     manifest_name = f"{CHROME_NATIVE_HOST_NAME}.json"
-    return any(
-        (
-            config_home
-            / browser
-            / "NativeMessagingHosts"
-            / manifest_name
-        ).is_file()
-        for browser in ("google-chrome", "chromium")
-    )
+    payload = None
+    for browser in ("google-chrome", "chromium"):
+        source = config_home / browser / "NativeMessagingHosts" / manifest_name
+        payload = _valid_chrome_native_host_manifest(source)
+        if payload is not None:
+            break
+    if payload is None:
+        return chrome_native_host_registered(context)
+
+    destination = _chrome_native_host_manifest(context)
+    _ensure_directory(destination.parent)
+    _refuse_symlink(destination)
+    try:
+        current = destination.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        current = None
+    except OSError as exc:
+        raise UserFacingError(
+            f"Could not inspect Chrome native-host registration at {destination}: {exc}"
+        ) from exc
+    if current != payload:
+        _write_managed(destination, payload, 0o600)
+    else:
+        destination.chmod(0o600)
+    return chrome_native_host_registered(context)
 
 
 def launch_chrome(

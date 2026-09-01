@@ -110,6 +110,7 @@ ROOT/.codex-configure/
 `-- chrome/
     |-- home/
     `-- profile/
+        `-- NativeMessagingHosts/       # mirrored after Desktop plugin setup
 ```
 
 Short-lived socket and temporary paths use `/run/user/$UID/codex-configure/<root-id>/` when available, with a private `/tmp` fallback. This is configuration and binary isolation, not a hard filesystem or security boundary. Each launch root has independent state and can either receive an auth-only copy during setup or be signed in independently.
@@ -133,6 +134,14 @@ ROOT/.codex-configure/xdg/config/google-chrome/NativeMessagingHosts/com.openai.c
 ROOT/.codex-configure/xdg/state/openai-codex/chrome-native-hosts-v2.json
 ROOT/.codex-configure/codex-home/chrome-native-hosts-v2.json
 ```
+
+Because the launcher gives Chrome an explicit custom user-data directory, `launch chrome` validates Desktop's registration and atomically mirrors that exact manifest to:
+
+```text
+ROOT/.codex-configure/chrome/profile/NativeMessagingHosts/com.openai.codexextension.json
+```
+
+The launcher does not invent plugin or routing state; Desktop remains responsible for installing and updating it.
 
 Older roots may retain `chrome/chrome-native-hosts-v2.json`; that empty compatibility placeholder is no longer created or advertised as active routing state. If isolated Chrome was already running before an environment or Core change, close that Chrome process once and relaunch it so its native host inherits the new environment.
 

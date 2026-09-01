@@ -25,6 +25,7 @@ from .launch_context import (
     load_launch_context,
     local_state,
     rooted_environment,
+    sync_chrome_native_host_manifest,
     write_launch_configuration,
 )
 from .providers import ProviderDescriptor, validate_shortname
@@ -1124,12 +1125,14 @@ def run_launch_context(
                 "Opening its Chrome Web Store page; review and accept Chrome's "
                 "permission prompt to install it."
             )
-        if sys.platform == "linux" and not chrome_native_host_registered(context):
-            console.write(
-                "The root-scoped Chrome native host is not registered yet. Launch "
-                "Desktop from this root, then use Settings > Computer Use > Chrome "
-                "to install the required plugin."
-            )
+        if sys.platform == "linux":
+            sync_chrome_native_host_manifest(context)
+            if not chrome_native_host_registered(context):
+                console.write(
+                    "The root-scoped Chrome native host is not registered yet. Launch "
+                    "Desktop from this root, then use Settings > Computer Use > Chrome "
+                    "to install the required plugin."
+                )
         console.write("Launching the isolated Chrome profile...")
         return launch_chrome(
             context,

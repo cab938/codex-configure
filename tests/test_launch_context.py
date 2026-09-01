@@ -21,6 +21,7 @@ from codex_configure.launch_context import (
     launch_chrome,
     load_launch_context,
     rooted_environment,
+    sync_chrome_native_host_manifest,
     write_launch_configuration,
 )
 from codex_configure.runtime import ConfigManager
@@ -103,10 +104,40 @@ class LaunchRootTests(unittest.TestCase):
                 / "com.openai.codexextension.json"
             )
             native_host.parent.mkdir(parents=True)
-            native_host.write_text("{}\n", encoding="utf-8")
+            executable = context.state_dir / "extension-host"
+            executable.write_text("#!/bin/sh\n", encoding="utf-8")
+            executable.chmod(0o700)
+            native_host.write_text(
+                json.dumps(
+                    {
+                        "name": "com.openai.codexextension",
+                        "path": str(executable),
+                        "type": "stdio",
+                        "allowed_origins": [
+                            f"chrome-extension://{CHATGPT_CHROME_EXTENSION_ID}/"
+                        ],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
 
             self.assertTrue(chrome_extension_installed(context))
+            self.assertFalse(chrome_native_host_registered(context))
+            self.assertTrue(sync_chrome_native_host_manifest(context))
             self.assertTrue(chrome_native_host_registered(context))
+            mirrored = (
+                context.state_dir
+                / "chrome"
+                / "profile"
+                / "NativeMessagingHosts"
+                / "com.openai.codexextension.json"
+            )
+            self.assertEqual(
+                mirrored.read_text(encoding="utf-8"),
+                native_host.read_text(encoding="utf-8"),
+            )
+            self.assertEqual(stat.S_IMODE(mirrored.stat().st_mode), 0o600)
 
     @mock.patch("codex_configure.launch_context.subprocess.Popen")
     def test_chrome_launch_opens_store_and_preserves_native_host_environment(
