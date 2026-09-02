@@ -15,11 +15,18 @@ It deliberately provides two operating modes.
 | --- | --- | --- |
 | `launch [desktop|cli]` | Configured default | Configured default |
 | `launch chrome` | Configured Core in the extension native host | Configured fixed provider or Dynamic Picker |
+| `launch -- COMMAND [ARGS...]` | None (arbitrary executable) | Rooted environment only; no provider activation |
 | `run openai/cli` or `run openai/desktop` | Stock | OpenAI fixed for that launch |
 | `run name/cli` or `run name/desktop` | Stock | Named U-M service fixed for that launch |
 | `run cli` or `run desktop` | Patched | Qualified provider/model in the existing picker |
 
 Bare `codex-configure` is a read-only status operation. `init` owns context creation, repeated provider configuration, and Core/default-provider selection. Ordinary commands resolve only the exact current directory: they never search parents or fall back to a normal or legacy global Codex home. The explicit advanced `--codex-home PATH` option can manage a supplied Codex home but never creates a launcher or installs a project Core. Fixed-provider Stock Core launches support macOS and Linux. Dynamic Picker is acceptance-tested on Linux x86_64 with the Ubuntu 22.04 / glibc 2.35 baseline. Native macOS arm64 installation and launch are available as an experimental path pending the same real-Desktop acceptance boundary.
+
+`launch -- COMMAND [ARGS...]` is the integration escape hatch for another launcher,
+such as a teaching harness. It constructs the same rooted environment, preserves the
+caller's `PWD`, and executes the command directly with its argument vector. It does
+not select a provider, rewrite `config.toml`, or activate a patched Core. A command
+is required after `--`.
 
 ## System Boundary
 

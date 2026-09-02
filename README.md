@@ -52,6 +52,18 @@ codex-configure launch cli login
 codex-configure launch chrome          # launch roots only
 ```
 
+To run another executable with this root's isolated environment, use `--` as the
+target separator. The command and its arguments are executed directly, without a
+shell or provider configuration changes:
+
+```bash
+codex-configure launch -- codex-harness-observatory
+codex-configure launch -- my-command --flag value
+```
+
+The exact current directory must already be an initialized launch root, just as it
+must be for the other `launch` targets. `launch --` without a command is an error.
+
 From an initialized launch root, `launch` uses the exact current directory's `.codex-configure/launch.sh`. It never searches parent directories and never falls back to `~/.codex` or a legacy global launcher. An absent or invalid local root is an error.
 
 `doctor`, `restore`, `setup dynamic`, `patch`, and the older explicit `run provider/app` form remain available for diagnosis and advanced control.

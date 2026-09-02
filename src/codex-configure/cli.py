@@ -1067,6 +1067,16 @@ def run_launch_context(
             "Global launch configurations are no longer supported. "
             "Run `codex-configure init` inside a project directory."
         )
+    if args and args[0] == "--":
+        command_args = tuple(args[1:])
+        if not command_args:
+            raise UserFacingError(
+                "Arbitrary launch requires a command after `launch --`."
+            )
+        child_environment = rooted_environment(context, environ)
+        console.write(f"Launch root: {context.root}")
+        os.execvpe(command_args[0], list(command_args), child_environment)
+        return 0  # pragma: no cover - os.execvpe does not return on success
     target = args[0] if args else "desktop"
     app_args = tuple(args[1:])
     if target not in {"desktop", "cli", "chrome"}:
@@ -1191,7 +1201,10 @@ def build_parser() -> argparse.ArgumentParser:
     launch = subparsers.add_parser(
         "launch",
         help="Launch from the exact-current-directory root.",
-        description="Launch desktop by default, or pass a target and its remaining arguments.",
+        description=(
+            "Launch desktop by default, pass a target and its remaining arguments, "
+            "or run an arbitrary command with `launch -- COMMAND [ARGS...]`."
+        ),
     )
     launch.add_argument("launch_args", nargs=argparse.REMAINDER, metavar="[desktop|cli|chrome] [ARGS...]")
 

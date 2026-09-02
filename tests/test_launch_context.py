@@ -8,7 +8,14 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from codex_configure.cli import Console, run_init_command, run_launch, run_launch_context, run_status
+from codex_configure.cli import (
+    Console,
+    build_parser,
+    run_init_command,
+    run_launch,
+    run_launch_context,
+    run_status,
+)
 from codex_configure.errors import UserFacingError
 from codex_configure.launch_context import (
     CHATGPT_CHROME_EXTENSION_ID,
@@ -28,6 +35,16 @@ from codex_configure.runtime import ConfigManager
 
 
 class LaunchRootTests(unittest.TestCase):
+    def test_parser_preserves_arbitrary_command_arguments_after_separator(self) -> None:
+        parsed = build_parser().parse_args(
+            ["launch", "--", "codex-harness-observatory", "--desktop"]
+        )
+
+        self.assertEqual(
+            parsed.launch_args,
+            ["--", "codex-harness-observatory", "--desktop"],
+        )
+
     def test_root_layout_and_environment_are_self_contained(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "project"
@@ -426,6 +443,65 @@ class LaunchRootTests(unittest.TestCase):
             child_environment = run.call_args.args[3]
             self.assertEqual(child_environment["PWD"], "/callers/workspace")
             self.assertEqual(child_environment["CODEX_HOME"], str(context.codex_home))
+
+    @mock.patch("codex_configure.cli.os.execvpe")
+    def test_internal_arbitrary_launch_uses_rooted_environment_and_argv(
+        self, execvpe: mock.Mock
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "project"
+            root.mkdir()
+            context = initialize_root(root)
+            write_launch_configuration(
+                context.state_dir,
+                context.codex_home,
+                LaunchSettings("stock", "openai"),
+                root=True,
+            )
+            output = io.StringIO()
+            caller_environment = {
+                "PWD": "/callers/workspace",
+                "PATH": "/usr/bin",
+                "CODEX_CLI_PATH": "/inherited/core",
+                "OPENAI_API_KEY": "inherited-secret",
+            }
+
+            result = run_launch_context(
+                context.state_dir,
+                ("--", "observatory", "--desktop"),
+                Console(io.StringIO(), output),
+                caller_environment,
+            )
+
+            self.assertEqual(result, 0)
+            execvpe.assert_called_once()
+            command, argv, child_environment = execvpe.call_args.args
+            self.assertEqual(command, "observatory")
+            self.assertEqual(argv, ["observatory", "--desktop"])
+            self.assertEqual(child_environment["PWD"], "/callers/workspace")
+            self.assertEqual(child_environment["CODEX_HOME"], str(context.codex_home))
+            self.assertEqual(child_environment["CODEX_CLI_PATH"], "/inherited/core")
+            self.assertEqual(child_environment["OPENAI_API_KEY"], "inherited-secret")
+
+    def test_internal_arbitrary_launch_requires_a_command(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "project"
+            root.mkdir()
+            context = initialize_root(root)
+            write_launch_configuration(
+                context.state_dir,
+                context.codex_home,
+                LaunchSettings("stock", "openai"),
+                root=True,
+            )
+
+            with self.assertRaisesRegex(UserFacingError, "requires a command"):
+                run_launch_context(
+                    context.state_dir,
+                    ("--",),
+                    Console(io.StringIO(), io.StringIO()),
+                    {"PATH": "/usr/bin"},
+                )
 
     def test_dynamic_chrome_launch_injects_core_credentials_and_setup_guidance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
