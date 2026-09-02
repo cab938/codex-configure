@@ -23,6 +23,7 @@ SCHEMA_VERSION = 1
 ROOT_KIND = "codex-configure-launch-root"
 LAUNCH_KIND = "codex-configure-launch"
 STATE_DIRECTORY = ".codex-configure"
+CORE_PROJECT_ROOT_MARKER = f"{STATE_DIRECTORY}/root.toml"
 MAX_AUTH_FILE_BYTES = 16 * 1024 * 1024
 CHATGPT_CHROME_EXTENSION_ID = "hehggadaopoacecdllhhajmbjkdcmajg"
 CHATGPT_CHROME_EXTENSION_STORE_URL = (

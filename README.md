@@ -127,6 +127,8 @@ ROOT/.codex-configure/
 
 Short-lived socket and temporary paths use `/run/user/$UID/codex-configure/<root-id>/` when available, with a private `/tmp` fallback. This is configuration and binary isolation, not a hard filesystem or security boundary. Each launch root has independent state and can either receive an auth-only copy during setup or be signed in independently.
 
+Initialization also adds `.codex-configure/root.toml` to Core's `project_root_markers`, preserving any existing custom markers. This stops project-scoped `.codex` discovery at the launch root instead of allowing an unrelated marker in a parent directory to expose that parent's Codex configuration or skills.
+
 `launch chrome` starts Chrome or Chromium with the root's isolated browser home and profile. Desktop and Chrome both receive `CODEX_CHROME_USER_DATA_DIR` for that profile. A Dynamic Picker launch also passes the root's patched `CODEX_CLI_PATH` and every configured provider credential into Chrome, where the extension's native host inherits them. A stock launch removes an inherited patched-Core path and passes only the selected external provider's credential, if any. The command does not change the active Codex configuration.
 
 ### Chrome Extension Setup

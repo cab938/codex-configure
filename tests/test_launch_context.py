@@ -11,6 +11,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import tomlkit
+
 from codex_configure.cli import (
     Console,
     build_parser,
@@ -217,9 +219,23 @@ class LaunchRootTests(unittest.TestCase):
             )
 
             context = load_launch_context(cwd / ".codex-configure")
+            active = tomlkit.parse(
+                (context.codex_home / "config.toml").read_text(encoding="utf-8")
+            )
+            base_config = tomlkit.parse(
+                ConfigManager(context.codex_home).paths.base_config.read_text(encoding="utf-8")
+            )
             self.assertEqual(result, 0)
             self.assertTrue(ConfigManager(context.codex_home).is_initialized())
             self.assertEqual(context.settings, LaunchSettings("stock", "openai"))
+            self.assertEqual(
+                list(active["project_root_markers"]),
+                [".git", ".codex-configure/root.toml"],
+            )
+            self.assertEqual(
+                list(base_config["project_root_markers"]),
+                [".git", ".codex-configure/root.toml"],
+            )
             self.assertFalse((home / ".codex").exists())
             self.assertIn("Launch root:", output.getvalue())
 
@@ -253,6 +269,38 @@ class LaunchRootTests(unittest.TestCase):
             installer.install.assert_called_once_with()
             self.assertTrue(str(install_directory).startswith(str(cwd / ".codex-configure")))
             self.assertFalse((home / ".codex-configure").exists())
+
+    def test_reinitializing_root_preserves_custom_project_root_markers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            cwd = base / "project"
+            home = base / "home"
+            cwd.mkdir()
+            home.mkdir()
+            context = initialize_root(cwd)
+            (context.codex_home / "config.toml").write_text(
+                'project_root_markers = [".hg"]\n',
+                encoding="utf-8",
+            )
+
+            result = run_init_command(
+                cwd,
+                home,
+                Console(io.StringIO("3\n2\n1\n"), io.StringIO()),
+                {"HOME": str(home)},
+            )
+
+            manager = ConfigManager(context.codex_home)
+            active = tomlkit.parse(
+                (context.codex_home / "config.toml").read_text(encoding="utf-8")
+            )
+            base_config = tomlkit.parse(
+                manager.paths.base_config.read_text(encoding="utf-8")
+            )
+            expected = [".hg", ".codex-configure/root.toml"]
+            self.assertEqual(result, 0)
+            self.assertEqual(list(active["project_root_markers"]), expected)
+            self.assertEqual(list(base_config["project_root_markers"]), expected)
 
     def test_status_is_read_only_when_nothing_is_configured(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -465,7 +513,12 @@ class LaunchRootTests(unittest.TestCase):
             )
             self.assertEqual(stat.S_IMODE((target_home / "auth.json").stat().st_mode), 0o600)
             self.assertFalse((target_home / "skills").exists())
-            self.assertFalse((target_home / "config.toml").exists())
+            target_config = (target_home / "config.toml").read_text(encoding="utf-8")
+            self.assertEqual(
+                list(tomlkit.parse(target_config)["project_root_markers"]),
+                [".git", ".codex-configure/root.toml"],
+            )
+            self.assertNotIn("source-only", target_config)
             self.assertIn(f"detected: {source_home} -> copy auth", output.getvalue())
 
     def test_auth_copy_refuses_to_overwrite_existing_authentication(self) -> None:

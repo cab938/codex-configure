@@ -15,6 +15,7 @@ from typing import Any, Iterable, Mapping, Sequence, TextIO
 from .catalog import CatalogService, ModelChoice, is_default_model_slug
 from .errors import UserFacingError
 from .launch_context import (
+    CORE_PROJECT_ROOT_MARKER,
     LaunchContext,
     LaunchSettings,
     chrome_extension_installed,
@@ -949,6 +950,7 @@ def run_init_command(
     if result != 0:
         return result
     manager = ConfigManager(root_context.codex_home)
+    manager.ensure_project_root_marker(CORE_PROJECT_ROOT_MARKER)
     settings = _choose_launch_settings(manager, console)
     if settings.core == "dynamic":
         run_setup_dynamic(

@@ -241,6 +241,53 @@ class ConfigManager:
 
         self._write_openai_profile()
 
+    def ensure_project_root_marker(self, marker: str) -> None:
+        """Keep Core's project discovery inside a managed launch root."""
+
+        self.require_initialized()
+        with self._activation_lock():
+            self._reconcile_active_config()
+            try:
+                state = tomlkit.parse(self.paths.state.read_text(encoding="utf-8"))
+            except (OSError, tomlkit.exceptions.ParseError) as exc:
+                raise UserFacingError(f"Invalid runtime state at {self.paths.state}: {exc}") from exc
+            environment = state.get("active_environment")
+            if not self._known_environment(environment):
+                raise UserFacingError(
+                    f"Runtime state at {self.paths.state} has an unknown active environment."
+                )
+
+            base = tomlkit.parse(self.paths.base_config.read_text(encoding="utf-8"))
+            active = tomlkit.parse(self._read_active_config())
+            base_changed = self._append_project_root_marker(base, marker)
+            active_changed = self._append_project_root_marker(active, marker)
+
+            if base_changed:
+                base_text = tomlkit.dumps(base)
+                self._validate_toml(base_text, self.paths.base_config)
+                self._atomic_write(self.paths.base_config, base_text)
+            if active_changed:
+                self._promote_active_config(tomlkit.dumps(active), str(environment))
+
+    @staticmethod
+    def _append_project_root_marker(document: Any, marker: str) -> bool:
+        configured = document.get("project_root_markers")
+        if configured is None:
+            markers = [".git"]
+        elif not isinstance(configured, list) or any(
+            not isinstance(value, str) for value in configured
+        ):
+            raise UserFacingError(
+                "Existing project_root_markers configuration must be an array of strings."
+            )
+        else:
+            markers = list(configured)
+        if marker in markers:
+            return False
+        markers.append(marker)
+        document["project_root_markers"] = markers
+        return True
+
     def doctor(self, credential_path: Path | None = None) -> DoctorReport:
         """Inspect the managed runtime without creating or modifying any files."""
         checks: list[DoctorCheck] = []
