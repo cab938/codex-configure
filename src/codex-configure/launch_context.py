@@ -222,7 +222,7 @@ def _launcher_text() -> str:
     return """#!/bin/sh
 set -eu
 state_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-exec codex-configure _launch-context "$state_dir" "$@"
+exec codex-configure _launch-context "$state_dir" -- "$@"
 """
 
 

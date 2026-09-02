@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -311,6 +314,72 @@ class LaunchRootTests(unittest.TestCase):
 
             launcher = str(context.state_dir / "launch.sh")
             execv.assert_called_once_with(launcher, [launcher, "cli", "login"])
+
+    def test_public_arbitrary_launch_crosses_generated_launcher_parse_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "project"
+            home = base / "home"
+            record = base / "record.json"
+            runtime = base / "runtime"
+            root.mkdir()
+            home.mkdir()
+            context = initialize_root(root)
+            write_launch_configuration(
+                context.state_dir,
+                context.codex_home,
+                LaunchSettings("stock", "openai"),
+                root=True,
+            )
+
+            codex_configure = Path(sys.executable).parent / "codex-configure"
+            self.assertTrue(codex_configure.is_file())
+            child_code = (
+                "import json, os, sys; "
+                "json.dump({'argv': sys.argv[1:], 'pwd': os.environ.get('PWD'), "
+                "'codex_home': os.environ.get('CODEX_HOME')}, "
+                "open(os.environ['HARNESS_RECORD'], 'w'))"
+                "; raise SystemExit(7)"
+            )
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "HOME": str(home),
+                    "PATH": f"{codex_configure.parent}{os.pathsep}{environment.get('PATH', '')}",
+                    "PWD": "/callers/workspace",
+                    "CODEX_CONFIGURE_RUNTIME_ROOT": str(runtime),
+                    "HARNESS_RECORD": str(record),
+                }
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "codex_configure",
+                    "launch",
+                    "--",
+                    sys.executable,
+                    "-c",
+                    child_code,
+                    "ignored",
+                    "payload",
+                ],
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 7, result.stderr)
+            self.assertEqual(
+                json.loads(record.read_text(encoding="utf-8")),
+                {
+                    "argv": ["ignored", "payload"],
+                    "pwd": str(root),
+                    "codex_home": str(context.codex_home),
+                },
+            )
 
     @mock.patch("codex_configure.cli.os.execv")
     def test_legacy_global_launcher_is_never_a_fallback(
