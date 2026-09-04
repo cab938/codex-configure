@@ -14,6 +14,7 @@ import tomlkit
 
 from .catalog import ModelChoice
 from .errors import UserFacingError
+from .known_catalog import KnownCatalogProvenance
 from .providers import ProviderDescriptor, ProviderRegistry, validate_shortname
 
 try:
@@ -37,6 +38,7 @@ class RuntimePaths:
     profiles: Path
     providers: Path
     catalogs: Path
+    cache: Path
     env_file: Path
     locks: Path
     recovery: Path
@@ -59,6 +61,7 @@ class RuntimePaths:
             profiles=root / "profiles",
             providers=root / "providers.d",
             catalogs=root / "catalogs",
+            cache=root / "cache",
             env_file=root / ".env",
             locks=root / "locks",
             recovery=root / "recovery",
@@ -156,24 +159,11 @@ class ConfigManager:
             raise UserFacingError(
                 f"Credential variable for `{shortname}` must be {expected_env}."
             )
-        model_ids = selected_models or [
-            str(entry["slug"])
-            for entry in catalog.get("models", [])
-            if isinstance(entry, dict) and isinstance(entry.get("slug"), str)
-        ]
-        if not model_ids:
-            raise UserFacingError("The selected model catalog must contain at least one model.")
-        catalog_ids = {
-            str(entry["slug"])
-            for entry in catalog.get("models", [])
-            if isinstance(entry, dict) and isinstance(entry.get("slug"), str)
-        }
-        if any(model_id not in catalog_ids for model_id in model_ids):
-            raise UserFacingError("Selected models must all be present in the generated catalog.")
-        if default_model is None:
-            default_model = model_ids[0]
-        if default_model not in model_ids:
-            raise UserFacingError("The default model must be one of the selected models.")
+        model_ids, default_model = self._catalog_selection(
+            catalog,
+            selected_models,
+            default_model,
+        )
         descriptor = self.registry.write_umich_provider(
             shortname,
             None if api_key == "" else api_key,
@@ -188,6 +178,154 @@ class ConfigManager:
         )
         return descriptor
 
+    def save_local_provider(
+        self,
+        shortname: str,
+        base_url: str,
+        api_key: str | None,
+        catalog: dict[str, Any],
+        *,
+        selected_models: list[str] | None = None,
+        default_model: str | None = None,
+        catalog_source: str | None = None,
+        known_catalog: KnownCatalogProvenance | None = None,
+        display_name: str | None = None,
+    ) -> ProviderDescriptor:
+        """Persist one local Responses-compatible service and its UI profile."""
+
+        self.initialize()
+        model_ids, default_model = self._catalog_selection(
+            catalog,
+            selected_models,
+            default_model,
+        )
+        descriptor = self.registry.write_local_provider(
+            shortname,
+            base_url,
+            api_key,
+            catalog,
+            display_name=display_name,
+        )
+        self._write_named_profile(
+            descriptor,
+            model_ids,
+            default_model,
+            catalog_source or f"{base_url.rstrip('/')}/models",
+            known_catalog=known_catalog,
+        )
+        return descriptor
+
+    def validate_provider_removal(
+        self,
+        shortname: str,
+        *,
+        allow_active: bool = False,
+    ) -> ProviderDescriptor:
+        """Refuse removal when the active managed config still uses a profile."""
+
+        validate_shortname(shortname)
+        self.require_initialized()
+        descriptor = self.registry.validate_provider_removal(shortname)
+        if descriptor.stock:
+            raise UserFacingError("The stock OpenAI profile cannot be removed.")
+        for label, path in (
+            ("active config", self.paths.active_config),
+            ("base snapshot", self.paths.base_config),
+        ):
+            try:
+                document = tomlkit.parse(path.read_text(encoding="utf-8"))
+            except (OSError, tomlkit.exceptions.ParseError) as exc:
+                raise UserFacingError(f"Could not inspect {label} before removal: {exc}") from exc
+            if document.get("model_provider") == shortname and not allow_active:
+                raise UserFacingError(
+                    f"Profile `{shortname}` is still selected by the {label}. "
+                    "Switch this root to another provider before removing it."
+                )
+        self._owned_profile_children(self.paths.profiles / descriptor.id)
+        return descriptor
+
+    def remove_provider(self, shortname: str) -> ProviderDescriptor:
+        """Remove one inactive external profile's tool-owned files only."""
+
+        descriptor = self.validate_provider_removal(shortname)
+        profile_path = self.paths.profiles / descriptor.id
+        with self._activation_lock():
+            # Recheck after acquiring the lock so a concurrent launcher cannot
+            # activate the provider between preflight and deletion.
+            descriptor = self.validate_provider_removal(shortname)
+            self._remove_owned_profile(profile_path)
+            return self.registry.remove_provider(shortname)
+
+    def _remove_owned_profile(self, profile_path: Path) -> None:
+        """Delete the two files codex-configure creates in a profile directory."""
+
+        children = self._owned_profile_children(profile_path)
+        if not children:
+            return
+        for name in ("profile.toml", "config.toml"):
+            path = children.get(name)
+            if path is not None:
+                self._remove_file(path)
+        try:
+            profile_path.rmdir()
+        except OSError as exc:
+            raise UserFacingError(f"Could not remove profile directory {profile_path}: {exc}") from exc
+        self._fsync_directory(profile_path.parent)
+
+    @staticmethod
+    def _owned_profile_children(profile_path: Path) -> dict[str, Path]:
+        """Return the only two files a removable profile is allowed to own."""
+
+        if profile_path.is_symlink():
+            raise UserFacingError(f"Refusing to remove symlinked profile directory: {profile_path}")
+        if not profile_path.exists():
+            return {}
+        if not profile_path.is_dir():
+            raise UserFacingError(f"Profile path is not a directory: {profile_path}")
+        expected = {"profile.toml", "config.toml"}
+        try:
+            children = {child.name: child for child in profile_path.iterdir()}
+        except OSError as exc:
+            raise UserFacingError(f"Could not inspect profile directory {profile_path}: {exc}") from exc
+        unexpected = sorted(name for name in children if name not in expected)
+        if unexpected:
+            raise UserFacingError(
+                f"Profile directory {profile_path} contains non-tool-owned files "
+                f"({', '.join(unexpected)}); refusing removal."
+            )
+        for name in expected:
+            path = children.get(name)
+            if path is None:
+                continue
+            if path.is_symlink() or not path.is_file():
+                raise UserFacingError(f"Refusing to remove non-regular profile file: {path}")
+        return children
+
+    @staticmethod
+    def _catalog_selection(
+        catalog: dict[str, Any],
+        selected_models: list[str] | None,
+        default_model: str | None,
+    ) -> tuple[list[str], str]:
+        model_ids = selected_models or [
+            str(entry["slug"])
+            for entry in catalog.get("models", [])
+            if isinstance(entry, dict) and isinstance(entry.get("slug"), str)
+        ]
+        if not model_ids:
+            raise UserFacingError("The selected model catalog must contain at least one model.")
+        catalog_ids = {
+            str(entry["slug"])
+            for entry in catalog.get("models", [])
+            if isinstance(entry, dict) and isinstance(entry.get("slug"), str)
+        }
+        if any(model_id not in catalog_ids for model_id in model_ids):
+            raise UserFacingError("Selected models must all be present in the generated catalog.")
+        resolved_default = default_model or model_ids[0]
+        if resolved_default not in model_ids:
+            raise UserFacingError("The default model must be one of the selected models.")
+        return model_ids, resolved_default
+
     def initialize(self) -> None:
         codex_home_existed = self.paths.codex_home.exists()
         self.paths.codex_home.mkdir(parents=True, exist_ok=True)
@@ -199,6 +337,7 @@ class ConfigManager:
             self.paths.profiles,
             self.paths.providers,
             self.paths.catalogs,
+            self.paths.cache,
             self.paths.locks,
             self.paths.recovery,
         ):
@@ -409,12 +548,12 @@ class ConfigManager:
             mode = credential.stat().st_mode & 0o777
             status = "ok" if os.name == "nt" or mode & 0o077 == 0 else "error"
             detail = f"{credential} (mode {mode:04o})"
-            checks.append(DoctorCheck(status, "U-M credential file", detail))
+            checks.append(DoctorCheck(status, "Provider credential file", detail))
         else:
             checks.append(
                 DoctorCheck(
                     "warning",
-                    "U-M credential file",
+                    "Provider credential file",
                     f"not present at {credential} (OpenAI remains usable)",
                 )
             )
@@ -459,6 +598,9 @@ class ConfigManager:
                     # Stock Core cannot route an external-qualified value.
                     # Omitting it lets the current stock OpenAI default win.
                     del base["model"]
+            for key in ("model_provider", "model_catalog_json"):
+                if key in base:
+                    del base[key]
             self._promote_active_config(tomlkit.dumps(base), "openai")
         return self.paths.profiles / "openai"
 
@@ -500,7 +642,10 @@ class ConfigManager:
             self._reconcile_active_config()
             base = tomlkit.parse(self.paths.base_config.read_text(encoding="utf-8"))
             for key in ("model", "model_provider", "model_catalog_json"):
-                base[key] = overlay[key]
+                if key in overlay:
+                    base[key] = overlay[key]
+                elif key in base:
+                    del base[key]
             base_providers = base.get("model_providers")
             if base_providers is None:
                 base_providers = tomlkit.table()
@@ -610,12 +755,14 @@ class ConfigManager:
         selected_ids: list[str],
         default_model: str,
         catalog_source: str,
+        *,
+        known_catalog: KnownCatalogProvenance | None = None,
     ) -> None:
         profile_path = self.paths.profiles / descriptor.id
         profile_path.mkdir(parents=True, exist_ok=True)
         profile_path.chmod(0o700)
         metadata = tomlkit.document()
-        metadata["schema_version"] = 1
+        metadata["schema_version"] = 2 if descriptor.kind == "local-responses" else 1
         metadata["id"] = descriptor.id
         metadata["display_name"] = descriptor.display_name
         metadata["provider_id"] = descriptor.id
@@ -623,6 +770,11 @@ class ConfigManager:
         metadata["catalog_path"] = str(descriptor.catalog_path)
         metadata["selected_models"] = selected_ids
         metadata["default_model"] = default_model
+        if descriptor.kind == "local-responses" and known_catalog is not None:
+            provenance = tomlkit.table()
+            for key, value in known_catalog.profile_values().items():
+                provenance[key] = value
+            metadata["known_catalog"] = provenance
         self._atomic_write(profile_path / "profile.toml", tomlkit.dumps(metadata))
         self._atomic_write(
             profile_path / "config.toml",
@@ -633,7 +785,10 @@ class ConfigManager:
         overlay = tomlkit.document()
         overlay["model"] = default_model
         overlay["model_provider"] = descriptor.id
-        overlay["model_catalog_json"] = str(descriptor.catalog_path)
+        if descriptor.kind != "local-responses":
+            # Stock Core expects its full ModelsResponse schema here. The
+            # narrow local catalog is expanded only by Dynamic Core discovery.
+            overlay["model_catalog_json"] = str(descriptor.catalog_path)
         providers = tomlkit.table()
         provider = tomlkit.table()
         for key, value in descriptor.provider_config().items():

@@ -214,7 +214,7 @@ class LaunchRootTests(unittest.TestCase):
             result = run_init_command(
                 cwd,
                 home,
-                Console(io.StringIO("1\n1\n3\n2\n1\n"), output),
+                Console(io.StringIO("1\n1\n4\n2\n1\n"), output),
                 {"HOME": str(home)},
             )
 
@@ -258,7 +258,7 @@ class LaunchRootTests(unittest.TestCase):
             result = run_init_command(
                 cwd,
                 home,
-                Console(io.StringIO("1\n3\n1\n"), io.StringIO()),
+                Console(io.StringIO("1\n4\n1\n"), io.StringIO()),
                 {"HOME": str(home)},
                 installer=installer,
             )
@@ -286,7 +286,7 @@ class LaunchRootTests(unittest.TestCase):
             result = run_init_command(
                 cwd,
                 home,
-                Console(io.StringIO("3\n2\n1\n"), io.StringIO()),
+                Console(io.StringIO("4\n2\n1\n"), io.StringIO()),
                 {"HOME": str(home)},
             )
 
@@ -501,7 +501,7 @@ class LaunchRootTests(unittest.TestCase):
             result = run_init_command(
                 cwd,
                 home,
-                Console(io.StringIO("1\n2\n3\n2\n1\n"), output),
+                Console(io.StringIO("1\n2\n4\n2\n1\n"), output),
                 {"HOME": str(home)},
             )
 

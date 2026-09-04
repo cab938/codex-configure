@@ -21,6 +21,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlsplit
 
 import tomlkit
 
@@ -157,6 +158,28 @@ class DotEnvStore:
             new_lines.append(replacement)
         _atomic_write(self.path, "\n".join(new_lines).rstrip("\n") + "\n")
 
+    def remove(self, name: str) -> bool:
+        """Remove one tool-owned credential entry while preserving all others."""
+
+        if not ENV_NAME_RE.fullmatch(name):
+            raise UserFacingError(f"Invalid credential environment variable name `{name}`.")
+        try:
+            old_lines = self.path.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            raise UserFacingError(f"Could not update credential file {self.path}: {exc}") from exc
+        new_lines = [
+            line
+            for line in old_lines
+            if (parsed := _parse_dotenv_line(line)) is None or parsed[0] != name
+        ]
+        if len(new_lines) == len(old_lines):
+            return False
+        text = "\n".join(new_lines).rstrip("\n")
+        _atomic_write(self.path, text + ("\n" if text else ""))
+        return True
+
     def load_environment(
         self,
         environ: Mapping[str, str] | None = None,
@@ -187,7 +210,7 @@ class ProviderDescriptor:
     catalog_path: Path
     descriptor_path: Path | None = None
     kind: str = "external"
-    header_name: str = UMICH_HEADER_NAME
+    header_name: str | None = UMICH_HEADER_NAME
     requires_openai_auth: bool = False
     stock: bool = False
 
@@ -209,18 +232,25 @@ class ProviderDescriptor:
 
     @property
     def env_http_headers(self) -> dict[str, str]:
+        if not self.header_name or not self.env_key:
+            return {}
         return {self.header_name: self.env_key}
 
     def provider_config(self) -> dict[str, Any]:
         """Return the ``[model_providers.<id>]`` mapping for Codex config."""
 
-        return {
+        config: dict[str, Any] = {
             "name": self.display_name,
             "base_url": self.base_url,
             "wire_api": self.wire_api,
             "requires_openai_auth": self.requires_openai_auth,
-            "env_http_headers": dict(self.env_http_headers),
         }
+        if self.env_key:
+            if self.header_name:
+                config["env_http_headers"] = dict(self.env_http_headers)
+            else:
+                config["env_key"] = self.env_key
+        return config
 
     def to_toml(self) -> str:
         document = tomlkit.document()
@@ -243,9 +273,13 @@ class ProviderDescriptor:
         provider["base_url"] = self.base_url
         provider["wire_api"] = self.wire_api
         provider["requires_openai_auth"] = self.requires_openai_auth
-        headers = tomlkit.inline_table()
-        headers[self.header_name] = self.env_key
-        provider["env_http_headers"] = headers
+        if self.env_key:
+            if self.header_name:
+                headers = tomlkit.inline_table()
+                headers[self.header_name] = self.env_key
+                provider["env_http_headers"] = headers
+            else:
+                provider["env_key"] = self.env_key
         providers[self.id] = provider
         document["model_providers"] = providers
         return tomlkit.dumps(document)
@@ -280,15 +314,27 @@ class ProviderDescriptor:
         base_url = required_string(provider_table.get("base_url"), "base_url")
         wire_api = required_string(provider_table.get("wire_api"), "wire_api")
         header_values = provider_table.get("env_http_headers")
-        if not isinstance(header_values, Mapping) or len(header_values) != 1:
+        direct_env_key = provider_table.get("env_key")
+        if header_values is not None and direct_env_key is not None:
             raise UserFacingError(
-                f"Provider descriptor {path} must define exactly one `env_http_headers` entry."
+                f"Provider descriptor {path} cannot define both `env_key` and `env_http_headers`."
             )
-        header_name, env_value = next(iter(header_values.items()))
-        if not isinstance(header_name, str) or not isinstance(env_value, str):
-            raise UserFacingError(f"Provider descriptor {path} has invalid `env_http_headers`.")
-        env_key = env_value
-        if not ENV_NAME_RE.fullmatch(env_key):
+        header_name: str | None = None
+        env_key = ""
+        if header_values is not None:
+            if not isinstance(header_values, Mapping) or len(header_values) != 1:
+                raise UserFacingError(
+                    f"Provider descriptor {path} must define exactly one `env_http_headers` entry."
+                )
+            header_name, env_value = next(iter(header_values.items()))
+            if not isinstance(header_name, str) or not isinstance(env_value, str):
+                raise UserFacingError(f"Provider descriptor {path} has invalid `env_http_headers`.")
+            env_key = env_value
+        elif direct_env_key is not None:
+            if not isinstance(direct_env_key, str):
+                raise UserFacingError(f"Provider descriptor {path} has invalid `env_key`.")
+            env_key = direct_env_key
+        if env_key and not ENV_NAME_RE.fullmatch(env_key):
             raise UserFacingError(f"Provider descriptor {path} has invalid credential environment name.")
         catalog_raw = document.get("model_catalog_json")
         if not isinstance(catalog_raw, str) or not catalog_raw:
@@ -477,11 +523,68 @@ class ProviderRegistry:
             self.env_store.update(env_key, api_key)
         return descriptor
 
+    def write_local_provider(
+        self,
+        shortname: str,
+        base_url: str,
+        api_key: str | None,
+        catalog: Mapping[str, Any],
+        *,
+        display_name: str | None = None,
+    ) -> ProviderDescriptor:
+        """Persist one local Responses-compatible service and its model catalog."""
+
+        self.ensure_layout()
+        env_key = self.validate_env_collision(shortname) if api_key is not None else ""
+        if api_key is not None and (
+            not api_key or "\n" in api_key or "\r" in api_key or "\x00" in api_key
+        ):
+            raise UserFacingError("A local bearer API key must be non-empty when supplied.")
+        parsed_url = urlsplit(base_url)
+        if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+            raise UserFacingError("Local Responses API base URL must be an http:// or https:// URL.")
+        normalized_base_url = base_url.rstrip("/")
+        models = catalog.get("models") if isinstance(catalog, Mapping) else None
+        if not isinstance(models, list) or not models:
+            raise UserFacingError("The selected model catalog must contain at least one model.")
+        model_ids: set[str] = set()
+        for model in models:
+            slug = model.get("slug") if isinstance(model, Mapping) else None
+            if not isinstance(slug, str) or not slug.strip():
+                raise UserFacingError("The selected model catalog contains an invalid model entry.")
+            if slug in model_ids:
+                raise UserFacingError(
+                    f"The selected model catalog contains duplicate model `{slug}`."
+                )
+            model_ids.add(slug)
+
+        catalog_text = json.dumps(dict(catalog), indent=2, sort_keys=False) + "\n"
+        catalog_file = self.catalog_path(shortname)
+        descriptor = ProviderDescriptor(
+            id=shortname,
+            display_name=display_name or f"Local Responses - {shortname}",
+            base_url=normalized_base_url,
+            wire_api="responses",
+            env_key=env_key,
+            catalog_path=catalog_file.resolve(),
+            descriptor_path=self.descriptor_path(shortname),
+            kind="local-responses",
+            header_name=None,
+        )
+
+        _atomic_write(catalog_file, catalog_text)
+        _atomic_write(descriptor.descriptor_path, descriptor.to_toml())  # type: ignore[arg-type]
+        if api_key is not None:
+            self.env_store.update(env_key, api_key)
+        return descriptor
+
     def load_credentials(self, environ: Mapping[str, str] | None = None) -> dict[str, str]:
         names: set[str] = set()
         for path in self._descriptor_paths():
             try:
-                names.add(ProviderDescriptor.from_toml(path).env_key)
+                env_key = ProviderDescriptor.from_toml(path).env_key
+                if env_key:
+                    names.add(env_key)
             except UserFacingError:
                 continue
         return self.env_store.load_environment(environ or {}, names)
@@ -492,6 +595,75 @@ class ProviderRegistry:
             return None
         values = self.load_credentials(environ)
         return values.get(descriptor.env_key)
+
+    def validate_provider_removal(self, shortname: str) -> ProviderDescriptor:
+        """Verify that removal will touch only canonical tool-owned files.
+
+        Descriptors are deliberately required to point at the catalog path
+        derived from their shortname.  A hand-edited descriptor can therefore
+        never make profile removal unlink an arbitrary catalog file.
+        """
+
+        validate_shortname(shortname)
+        descriptor = self.get(shortname)
+        if descriptor.stock:
+            raise UserFacingError("The stock OpenAI profile cannot be removed.")
+        descriptor_path = self.descriptor_path(shortname)
+        catalog_path = self.catalog_path(shortname)
+        if descriptor.descriptor_path != descriptor_path:
+            raise UserFacingError(
+                f"Provider `{shortname}` does not use its canonical tool-owned descriptor path; refusing removal."
+            )
+        if descriptor.catalog_path.resolve() != catalog_path.resolve():
+            raise UserFacingError(
+                f"Provider `{shortname}` does not use its canonical tool-owned catalog path; refusing removal."
+            )
+        for label, path in (("descriptor", descriptor_path), ("catalog", catalog_path)):
+            if path.is_symlink():
+                raise UserFacingError(f"Refusing to remove symlinked provider {label}: {path}")
+            if path.exists() and not path.is_file():
+                raise UserFacingError(f"Provider {label} is not a regular file: {path}")
+        return descriptor
+
+    def remove_provider(self, shortname: str) -> ProviderDescriptor:
+        """Remove only the canonical files owned by one external profile."""
+
+        descriptor = self.validate_provider_removal(shortname)
+        descriptor_path = self.descriptor_path(shortname)
+        catalog_path = self.catalog_path(shortname)
+
+        # A normalized key is normally unique, but preserve it if a legacy
+        # hand-edited descriptor still shares it with another profile.
+        shared_key = any(
+            other.id != shortname and other.env_key == descriptor.env_key
+            for other in self.list_providers(include_stock=False)
+        )
+        try:
+            catalog_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise UserFacingError(f"Could not remove provider catalog {catalog_path}: {exc}") from exc
+        try:
+            descriptor_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise UserFacingError(f"Could not remove provider descriptor {descriptor_path}: {exc}") from exc
+        for directory in (catalog_path.parent, descriptor_path.parent):
+            try:
+                directory_fd = os.open(directory, os.O_RDONLY)
+            except OSError:
+                continue
+            try:
+                os.fsync(directory_fd)
+            except OSError:
+                pass
+            finally:
+                os.close(directory_fd)
+        if descriptor.env_key and not shared_key:
+            self.env_store.remove(descriptor.env_key)
+        return descriptor
 
     def is_initialized(self) -> bool:
         """Return whether a usable provider layout has been installed."""

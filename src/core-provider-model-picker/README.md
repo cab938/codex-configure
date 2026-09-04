@@ -61,8 +61,21 @@ x-example-api-key = "RESEARCH_API_KEY"
 ```
 
 The referenced file must be a non-empty Codex `ModelsResponse` JSON catalog.
-Catalogs are loaded once during startup and are authoritative for external
-providers: Core never falls back to that provider's `/models` endpoint. A
+For `kind = "local-responses"`, it may instead use the narrow local schema:
+
+```json
+{"models":[{"slug":"local-coder","display_name":"Local Coder","context_window":16384,"input_modalities":["text","image"],"supported_reasoning_levels":[{"effort":"low","description":"Low"},{"effort":"medium","description":"Medium"}],"default_reasoning_level":"medium","supports_reasoning_summary_parameter":true,"priority":1}]}
+```
+
+Core expands a local entry from its unknown-model fallback, lists it in the
+picker, narrows input modalities, applies an explicit context window when
+present, and applies only the optional reasoning fields shown above. It rejects
+unknown local fields and explicitly clears native patching, search, service
+tiers, advanced tools, audio, multi-agent metadata, verbosity, and model
+instructions so a familiar-looking slug cannot inherit bundled capabilities.
+Standard tools retain the unknown-model fallback behavior. Catalogs are
+loaded once during startup and are authoritative for external providers: Core
+never queries that provider's `/models` endpoint at startup. A
 missing, malformed, empty, reserved, or duplicate provider descriptor is
 skipped with a startup warning. Selecting a provider that was skipped returns
 an actionable configuration error.
@@ -82,8 +95,10 @@ cargo test -p codex-core external_provider_catalogs::tests
 cargo check -p codex-app-server
 ```
 
-The two unit tests cover relative catalog loading, deterministic descriptor
-handling, and skip behavior. The app-server check verifies that the picker
+The focused unit tests cover relative catalog loading, deterministic descriptor
+handling, skip behavior, conservative local-catalog expansion, vision and
+reasoning mapping, explicit capability clearing, and rejection of arbitrary
+local fields. The app-server check verifies that the picker
 aggregation and startup-loaded catalog wiring compile against the pinned Core.
 
 For authenticated Linux acceptance, use `app_server_canary.py` with an isolated

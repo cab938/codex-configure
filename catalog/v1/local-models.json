@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-09-03T15:06:33Z",
+  "models_dev_source": {
+    "url": "https://models.dev/models.json",
+    "retrieved_at": "2026-09-03T14:35:57.967312Z",
+    "sha256": "77c2e8ecc9e76bec421ca3b3dc9d6a9cf6c2d0a6720f76163757a99bf98c5dde"
+  },
+  "models": [
+    {
+      "endpoint_id": "gpt-oss-120b-nothink",
+      "models_dev_id": "openai/gpt-oss-120b",
+      "display_name": "GPT OSS 120B",
+      "description": "Open GPT reasoning model for self-hosted agents and controllable deployments",
+      "reported": {
+        "input_modalities": [
+          "text"
+        ],
+        "context_window": 131072,
+        "models_dev_updated_at": "2025-08-05"
+      }
+    },
+    {
+      "endpoint_id": "gpt-oss-120b-think",
+      "models_dev_id": "openai/gpt-oss-120b",
+      "display_name": "GPT OSS 120B",
+      "description": "Open GPT reasoning model for self-hosted agents and controllable deployments",
+      "reported": {
+        "input_modalities": [
+          "text"
+        ],
+        "context_window": 131072,
+        "models_dev_updated_at": "2025-08-05"
+      }
+    },
+    {
+      "endpoint_id": "qwen3-coder-next-q6",
+      "models_dev_id": "alibaba/qwen3-coder-next",
+      "display_name": "Qwen3 Coder Next",
+      "description": "Open-weight Qwen coding model for agents, repository edits, and multi-turn tool use",
+      "reported": {
+        "input_modalities": [
+          "text"
+        ],
+        "context_window": 262144,
+        "models_dev_updated_at": "2026-02-03"
+      }
+    },
+    {
+      "endpoint_id": "qwen3.5-122b-a10b-nothink",
+      "models_dev_id": "alibaba/qwen3.5-122b-a10b",
+      "display_name": "Qwen3.5 122B-A10B",
+      "description": "Qwen vision-language model for visual reasoning, documents, and agent tasks",
+      "reported": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "context_window": 262144,
+        "models_dev_updated_at": "2026-02-23"
+      }
+    },
+    {
+      "endpoint_id": "qwen3.5-122b-a10b-think",
+      "models_dev_id": "alibaba/qwen3.5-122b-a10b",
+      "display_name": "Qwen3.5 122B-A10B",
+      "description": "Qwen vision-language model for visual reasoning, documents, and agent tasks",
+      "reported": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "context_window": 262144,
+        "models_dev_updated_at": "2026-02-23"
+      }
+    },
+    {
+      "endpoint_id": "qwen3.5-35b-a3b-q6",
+      "models_dev_id": "alibaba/qwen3.5-35b-a3b",
+      "display_name": "Qwen3.5 35B-A3B",
+      "description": "Qwen vision-language model for visual reasoning, documents, and agent tasks",
+      "reported": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "context_window": 262144,
+        "models_dev_updated_at": "2026-02-23"
+      },
+      "tested": {
+        "tested_at": "2026-09-03T15:03:25.547200Z",
+        "probe_version": "1",
+        "runtime": {
+          "name": "llama.cpp",
+          "version": "10320 (23634783c)"
+        },
+        "checks": {
+          "model_list": "pass",
+          "responses_streaming": "pass",
+          "standard_tools": "pass",
+          "vision": "not_run",
+          "reasoning_efforts": {},
+          "reasoning_summary": "not_run"
+        }
+      }
+    },
+    {
+      "endpoint_id": "qwen3.5-35b-a3b-q8",
+      "models_dev_id": "alibaba/qwen3.5-35b-a3b",
+      "display_name": "Qwen3.5 35B-A3B",
+      "description": "Qwen vision-language model for visual reasoning, documents, and agent tasks",
+      "reported": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "context_window": 262144,
+        "models_dev_updated_at": "2026-02-23"
+      }
+    }
+  ]
+}

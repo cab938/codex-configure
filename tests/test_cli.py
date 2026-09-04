@@ -4,17 +4,23 @@ import io
 import json
 import os
 import stat
+import sys
 import tempfile
+import threading
 import unittest
+import urllib.error
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
 import tomlkit
 
-from codex_configure.catalog import CatalogResult, ModelChoice
+from codex_configure.catalog import CatalogResult, CatalogService, ModelChoice
 from codex_configure.cli import (
     Console,
     Launcher,
+    main,
     parse_model_selection,
     run_doctor,
     run_init,
@@ -24,6 +30,9 @@ from codex_configure.cli import (
 )
 from codex_configure.core_install import CoreInstaller
 from codex_configure.errors import UserFacingError
+from codex_configure.known_catalog import KnownCatalogProvenance
+from codex_configure.known_catalog import KNOWN_LOCAL_CATALOG_URL, MODELS_DEV_MODELS_URL
+from codex_configure.launch_context import LaunchSettings, initialize_root, write_launch_configuration
 from codex_configure.runtime import ConfigManager
 
 
@@ -79,19 +88,96 @@ class FakeCatalogService:
         }
 
 
+class FakeLocalCatalogService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str | None]] = []
+        self.result = CatalogResult(
+            models=(
+                ModelChoice(
+                    slug="local-coder-small",
+                    display_name="local-coder-small",
+                    status="tested",
+                    catalog_entry={
+                        "slug": "local-coder-small",
+                        "display_name": "local-coder-small",
+                        "description": "Local test model",
+                        "context_window": 8192,
+                        "input_modalities": ["text"],
+                    },
+                    badges=("context 8,192", "tools tested"),
+                ),
+                ModelChoice(
+                    slug="local-coder-large",
+                    display_name="local-coder-large",
+                    status="known",
+                    catalog_entry={
+                        "slug": "local-coder-large",
+                        "display_name": "local-coder-large",
+                        "description": "Local test model",
+                        "input_modalities": ["text"],
+                    },
+                ),
+                ModelChoice(
+                    slug="local-coder-unverified",
+                    display_name="local-coder-unverified",
+                    status="unverified",
+                    catalog_entry={
+                        "slug": "local-coder-unverified",
+                        "display_name": "local-coder-unverified",
+                        "description": "Local endpoint-only model",
+                        "input_modalities": ["text"],
+                    },
+                ),
+                ModelChoice(
+                    slug="local-embedding",
+                    display_name="local-embedding",
+                    status="non-generation",
+                    catalog_entry={},
+                    selectable=False,
+                ),
+            ),
+            source="http://127.0.0.1:1337/v1/models",
+            known_catalog=KnownCatalogProvenance(
+                state="fresh",
+                sha256="a" * 64,
+                etag='"test-etag"',
+                fetched_at="2026-09-03T12:00:00Z",
+            ),
+        )
+
+    def discover_local(self, base_url: str, api_key: str | None = None) -> CatalogResult:
+        self.calls.append((base_url, api_key))
+        return self.result
+
+    def build_local_catalog(self, models: list[ModelChoice]) -> dict[str, object]:
+        return {
+            "models": [
+                {**choice.catalog_entry, "priority": index}
+                for index, choice in enumerate(models, start=1)
+            ]
+        }
+
+
 class FakeLauncher:
     def __init__(self) -> None:
         self.validated: list[str] = []
         self.launches: list[tuple[list[str], dict[str, str]]] = []
         self.removed_environment: list[tuple[str, ...]] = []
         self.stopped_checks = 0
+        self.stop_boundaries: list[tuple[Path | None, Path | None]] = []
 
     def validate(self, target: str, requires_environment: bool = False) -> list[str]:
         self.validated.append(target)
         return [f"fake-{target}"]
 
-    def ensure_clients_stopped(self) -> None:
+    def ensure_clients_stopped(
+        self,
+        target_codex_home: Path | None = None,
+        *,
+        target_root: Path | None = None,
+    ) -> None:
         self.stopped_checks += 1
+        self.stop_boundaries.append((target_codex_home, target_root))
 
     def running_clients(self) -> list[str]:
         return []
@@ -146,7 +232,7 @@ class CliFlowTests(unittest.TestCase):
 
         result = run_init(
             home,
-            Console(io.StringIO("2\nteaching\ntest-secret\nall\n\n4\n"), output),
+            Console(io.StringIO("2\nteaching\ntest-secret\nall\n\n5\n"), output),
             {},
             catalog_service=service,
         )
@@ -209,7 +295,7 @@ class CliFlowTests(unittest.TestCase):
                 io.StringIO(
                     "2\nteaching\nfirst-secret\nall\n\n"
                     "3\nresearch\nsecond-secret\nall\n\n"
-                    "5\n"
+                    "6\n"
                 ),
                 output,
             ),
@@ -242,7 +328,7 @@ class CliFlowTests(unittest.TestCase):
 
         run_init(
             home,
-            Console(io.StringIO("2\nsandbox\ntest-secret\nall\n\n4\n"), output),
+            Console(io.StringIO("2\nsandbox\ntest-secret\nall\n\n5\n"), output),
             {},
             catalog_service=service,
         )
@@ -252,6 +338,277 @@ class CliFlowTests(unittest.TestCase):
         )
         self.assertEqual([entry["slug"] for entry in catalog["models"]], ["gpt-5.6-terra"])
         self.assertIn("unsupported by this Codex build", output.getvalue())
+
+    def test_init_adds_keyed_local_responses_models(self) -> None:
+        temporary, home = self.make_home()
+        self.addCleanup(temporary.cleanup)
+        service = FakeLocalCatalogService()
+        output = io.StringIO()
+
+        result = run_init(
+            home,
+            Console(
+                io.StringIO("3\nlocal\n\nlocal-secret\n1-2\n\n5\n"),
+                output,
+            ),
+            {},
+            catalog_service=service,  # type: ignore[arg-type]
+        )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            service.calls,
+            [("http://127.0.0.1:1337/v1", "local-secret")],
+        )
+        manager = ConfigManager(home)
+        descriptor_text = (manager.paths.providers / "local.toml").read_text(encoding="utf-8")
+        descriptor = tomlkit.parse(descriptor_text)
+        local_provider = descriptor["model_providers"]["local"]
+        self.assertEqual(descriptor["kind"], "local-responses")
+        self.assertEqual(local_provider["base_url"], "http://127.0.0.1:1337/v1")
+        self.assertEqual(local_provider["env_key"], "LOCAL_API_KEY")
+        self.assertNotIn("env_http_headers", local_provider)
+        self.assertEqual(manager.load_credentials({}), {"LOCAL_API_KEY": "local-secret"})
+        catalog = json.loads((manager.paths.catalogs / "local.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            [entry["slug"] for entry in catalog["models"]],
+            ["local-coder-small", "local-coder-large"],
+        )
+        self.assertNotIn("local-secret", descriptor_text)
+        self.assertNotIn("local-secret", json.dumps(catalog))
+        profile = tomlkit.parse(
+            (manager.paths.profiles / "local" / "profile.toml").read_text(encoding="utf-8")
+        )
+        self.assertEqual(profile["schema_version"], 2)
+        self.assertEqual(profile["known_catalog"]["state"], "fresh")
+        self.assertEqual(profile["known_catalog"]["sha256"], "a" * 64)
+        self.assertIn("local-coder-small [tested; context 8,192; tools tested]", output.getvalue())
+        self.assertIn("local-coder-large [known]", output.getvalue())
+        self.assertIn("local-coder-unverified [unverified]", output.getvalue())
+
+    def test_local_setup_joins_a_fake_responses_server_to_the_owned_catalog(self) -> None:
+        temporary, home = self.make_home()
+        self.addCleanup(temporary.cleanup)
+        requests: list[tuple[str, str | None]] = []
+        endpoint_payload = json.dumps(
+            {
+                "data": [
+                    {"id": "local-tested", "meta": {"n_ctx": 16384}},
+                    {"id": "local-known"},
+                    {"id": "local-unverified"},
+                    {"id": "local-embedding"},
+                ]
+            }
+        ).encode("utf-8")
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 - stdlib handler contract
+                requests.append((self.path, self.headers.get("Authorization")))
+                if self.path != "/v1/models":
+                    self.send_error(404)
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(endpoint_payload)))
+                self.end_headers()
+                self.wfile.write(endpoint_payload)
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 2)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        port = server.server_address[1]
+        base_url = f"http://127.0.0.1:{port}/v1"
+        known_payload = {
+            "schema_version": 1,
+            "generated_at": "2026-09-03T12:00:00Z",
+            "models_dev_source": {
+                "url": MODELS_DEV_MODELS_URL,
+                "retrieved_at": "2026-09-03T12:00:00Z",
+                "sha256": "a" * 64,
+            },
+            "models": [
+                {
+                    "endpoint_id": "local-tested",
+                    "models_dev_id": "example/tested",
+                    "display_name": "Local Tested",
+                    "description": "Tested local model",
+                    "reported": {"input_modalities": ["text"], "context_window": 32768},
+                    "tested": {
+                        "tested_at": "2026-09-03T12:00:00Z",
+                        "probe_version": "1",
+                        "runtime": {"name": "fake", "version": "1"},
+                        "checks": {
+                            "model_list": "pass",
+                            "responses_streaming": "pass",
+                            "standard_tools": "pass",
+                            "vision": "not_run",
+                            "reasoning_efforts": {},
+                            "reasoning_summary": "not_run",
+                        },
+                    },
+                },
+                {
+                    "endpoint_id": "local-known",
+                    "models_dev_id": "example/known",
+                    "display_name": "Local Known",
+                    "description": "Known local model",
+                    "reported": {"input_modalities": ["text"]},
+                },
+            ],
+        }
+        remote_requests: list[urllib.request.Request] = []
+        real_urlopen = urllib.request.urlopen
+
+        def open_request(request: urllib.request.Request, timeout: float):
+            if request.full_url == KNOWN_LOCAL_CATALOG_URL:
+                remote_requests.append(request)
+                response = io.BytesIO(json.dumps(known_payload).encode("utf-8"))
+                response.headers = {"ETag": '"integration"'}  # type: ignore[attr-defined]
+                return response
+            return real_urlopen(request, timeout=timeout)
+
+        output = io.StringIO()
+        with mock.patch(
+            "codex_configure.catalog.urllib.request.urlopen", side_effect=open_request
+        ):
+            result = run_init(
+                home,
+                Console(
+                    io.StringIO(
+                        f"3\nlocal\n{base_url}\nendpoint-key\n2-4\n2\n5\n"
+                    ),
+                    output,
+                ),
+                {},
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(requests, [("/v1/models", "Bearer endpoint-key")])
+        self.assertIsNone(remote_requests[0].get_header("Authorization"))
+        catalog = json.loads(
+            (home / "codex-configure/catalogs/local.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            [entry["slug"] for entry in catalog["models"]],
+            ["local-known", "local-tested", "local-unverified"],
+        )
+        self.assertEqual(catalog["models"][1]["context_window"], 16384)
+        profile = tomlkit.parse(
+            (home / "codex-configure/profiles/local/profile.toml").read_text(encoding="utf-8")
+        )
+        self.assertEqual(profile["default_model"], "local-tested")
+        self.assertEqual(profile["known_catalog"]["state"], "fresh")
+        self.assertIn("Local Tested (local-tested) [tested", output.getvalue())
+        self.assertIn("Local Known (local-known) [known]", output.getvalue())
+        self.assertIn("local-unverified [unverified]", output.getvalue())
+
+    def test_local_reconfiguration_preserves_v1_selection_and_default(self) -> None:
+        temporary, home = self.make_home()
+        self.addCleanup(temporary.cleanup)
+        service = FakeLocalCatalogService()
+        manager = ConfigManager(home)
+        manager.save_local_provider(
+            "local",
+            "http://127.0.0.1:1337/v1",
+            "stored-secret",
+            service.build_local_catalog(list(service.result.models[:2])),
+            selected_models=["local-coder-small", "local-coder-large"],
+            default_model="local-coder-large",
+            catalog_source=service.result.source,
+        )
+        profile_path = manager.paths.profiles / "local" / "profile.toml"
+        profile = tomlkit.parse(profile_path.read_text(encoding="utf-8"))
+        profile["schema_version"] = 1
+        profile.pop("known_catalog", None)
+        profile_path.write_text(tomlkit.dumps(profile), encoding="utf-8")
+        output = io.StringIO()
+
+        result = run_init(
+            home,
+            Console(io.StringIO("2\n\n\n\n\n5\n"), output),
+            {},
+            catalog_service=service,  # type: ignore[arg-type]
+        )
+
+        self.assertEqual(result, 0)
+        rewritten = tomlkit.parse(profile_path.read_text(encoding="utf-8"))
+        self.assertEqual(rewritten["schema_version"], 2)
+        self.assertEqual(
+            list(rewritten["selected_models"]),
+            ["local-coder-small", "local-coder-large"],
+        )
+        self.assertEqual(rewritten["default_model"], "local-coder-large")
+        self.assertEqual(rewritten["known_catalog"]["state"], "fresh")
+
+    def test_unkeyed_local_profile_runs_without_a_credential(self) -> None:
+        temporary, home = self.make_home()
+        self.addCleanup(temporary.cleanup)
+        manager = ConfigManager(home)
+        manager.save_local_provider(
+            "local",
+            "http://127.0.0.1:1337/v1",
+            None,
+            {
+                "models": [
+                    {
+                        "slug": "local-coder",
+                        "display_name": "local-coder",
+                        "input_modalities": ["text"],
+                        "priority": 1,
+                    }
+                ]
+            },
+        )
+        launcher = FakeLauncher()
+
+        result = run_run(
+            home,
+            "local/cli",
+            Console(io.StringIO(), io.StringIO()),
+            {},
+            manager=manager,
+            launcher=launcher,
+        )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(launcher.launches, [(["fake-cli"], {})])
+        self.assertEqual(launcher.validated, ["cli"])
+        active = tomlkit.parse((home / "config.toml").read_text(encoding="utf-8"))
+        self.assertEqual(active["model_provider"], "local")
+        self.assertEqual(active["model"], "local-coder")
+        self.assertNotIn("model_catalog_json", active)
+
+    def test_discovery_filters_non_generation_models_and_preserves_known_context(self) -> None:
+        payload = {
+            "data": [
+                {"id": "coder", "meta": {"n_ctx": 16384}},
+                {"id": "text-embedding-model"},
+                {"id": "reranker-model"},
+            ]
+        }
+        response = io.BytesIO(json.dumps(payload).encode("utf-8"))
+        with mock.patch(
+            "codex_configure.catalog.urllib.request.urlopen",
+            side_effect=[urllib.error.URLError("catalog offline"), response],
+        ):
+            result = CatalogService(Path("/tmp/codex-home")).discover_local(
+                "http://127.0.0.1:1337/v1",
+                api_key="test-key",
+            )
+
+        self.assertEqual(result.source, "http://127.0.0.1:1337/v1/models")
+        self.assertEqual([model.slug for model in result.selectable_models], ["coder"])
+        self.assertEqual(result.selectable_models[0].catalog_entry["context_window"], 16384)
+        self.assertEqual(
+            [model.status for model in result.models if not model.selectable],
+            ["non-generation", "non-generation"],
+        )
 
     def test_stock_named_run_uses_one_key_and_removes_patched_core(self) -> None:
         temporary, home = self.make_home()
@@ -272,6 +629,7 @@ class CliFlowTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertEqual(launcher.stopped_checks, 1)
+        self.assertEqual(launcher.stop_boundaries, [(home.resolve(), None)])
         self.assertEqual(launcher.launches, [(["fake-cli"], {"TEACHING_API_KEY": "file-secret"})])
         self.assertEqual(launcher.removed_environment, [("CODEX_CLI_PATH",)])
         active = tomlkit.parse((home / "config.toml").read_text(encoding="utf-8"))
@@ -280,6 +638,30 @@ class CliFlowTests(unittest.TestCase):
         self.assertLess(
             output.getvalue().index("Profiles directory:"),
             output.getvalue().index("Launching teaching/cli"),
+        )
+
+    def test_stock_named_run_scopes_lifecycle_to_its_launch_root(self) -> None:
+        temporary, home = self.make_home()
+        self.addCleanup(temporary.cleanup)
+        manager = ConfigManager(home)
+        self.save_profile(manager, "teaching", "file-secret")
+        launcher = FakeLauncher()
+        launch_root = home.parent / "project-root"
+
+        result = run_run(
+            home,
+            "teaching/cli",
+            Console(io.StringIO(), io.StringIO()),
+            {},
+            manager=manager,
+            launcher=launcher,
+            launch_root=launch_root,
+        )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            launcher.stop_boundaries,
+            [(home.resolve(), launch_root.resolve())],
         )
 
     def test_missing_key_does_not_activate_named_profile(self) -> None:
@@ -832,6 +1214,97 @@ class CliFlowTests(unittest.TestCase):
         self.assertIn("Environment: OpenAI", restore_output.getvalue())
         self.assertEqual(launcher.stopped_checks, 1)
 
+    def test_doctor_keeps_live_client_advice_separate_from_configuration_health(self) -> None:
+        temporary, home = self.make_home()
+        self.addCleanup(temporary.cleanup)
+        manager = ConfigManager(home)
+        manager.initialize()
+        launcher = FakeLauncher()
+        launcher.running_clients = mock.Mock(return_value=["ChatGPT", "codex"])
+        output = io.StringIO()
+
+        result = run_doctor(
+            home,
+            Console(io.StringIO(), output),
+            {},
+            manager=manager,
+            launcher=launcher,
+        )
+
+        self.assertEqual(result, 1)
+        report = output.getvalue()
+        self.assertIn("Managed configuration: healthy", report)
+        self.assertIn(
+            "[ADVISORY] Client lifecycle: detected ChatGPT Desktop, Codex CLI.",
+            report,
+        )
+        self.assertIn("Profile switching and restore are blocked", report)
+        self.assertIn("Dynamic Picker launches do not have this blanket requirement", report)
+        self.assertIn(
+            "Action: fully quit ChatGPT Desktop, Codex CLI, then rerun `codex-configure doctor`.",
+            report,
+        )
+        self.assertIn("Result: managed configuration healthy; client action required", report)
+        self.assertNotIn("[ERROR] Client lifecycle", report)
+
+    def test_doctor_reports_an_uninitialized_exact_cwd_without_creating_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            cwd = base / "project"
+            parent_context = initialize_root(base)
+            global_home = base / "home" / ".codex"
+            global_home.mkdir(parents=True)
+            (global_home / "config.toml").write_text('model = "gpt-5.6-sol"\n', encoding="utf-8")
+            cwd.mkdir()
+            output = io.StringIO()
+
+            with (
+                mock.patch("codex_configure.cli.Path.cwd", return_value=cwd),
+                mock.patch.object(Launcher, "running_clients", return_value=[]),
+                mock.patch.object(sys, "stdout", output),
+                mock.patch.dict(os.environ, {"HOME": str(base / "home")}, clear=True),
+            ):
+                result = main(["doctor"])
+
+            self.assertEqual(result, 1)
+            self.assertFalse((cwd / ".codex-configure").exists())
+            report = output.getvalue()
+            self.assertIn("Launch root (exact current directory)", report)
+            self.assertIn("Status: not configured", report)
+            self.assertIn(str(cwd / ".codex-configure" / "codex-home"), report)
+            self.assertNotIn(str(parent_context.codex_home), report)
+            self.assertNotIn(str(global_home), report)
+
+    def test_doctor_checks_an_initialized_exact_cwd_without_building_a_launch_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            cwd = Path(temporary) / "project"
+            cwd.mkdir()
+            context = initialize_root(cwd)
+            write_launch_configuration(
+                context.state_dir,
+                context.codex_home,
+                LaunchSettings("stock", "openai"),
+                root=True,
+            )
+            (context.codex_home / "config.toml").write_text(
+                'model = "gpt-5.6-sol"\n', encoding="utf-8"
+            )
+            ConfigManager(context.codex_home).initialize()
+            output = io.StringIO()
+
+            with (
+                mock.patch("codex_configure.cli.Path.cwd", return_value=cwd),
+                mock.patch.object(Launcher, "running_clients", return_value=[]),
+                mock.patch("codex_configure.cli.rooted_environment") as rooted,
+                mock.patch.object(sys, "stdout", output),
+            ):
+                result = main(["doctor"])
+
+            self.assertEqual(result, 0)
+            rooted.assert_not_called()
+            self.assertIn("Status: recognized", output.getvalue())
+            self.assertIn("Result: healthy", output.getvalue())
+
     @unittest.skipIf(os.name == "nt", "POSIX permission behavior")
     def test_existing_codex_home_permissions_are_unchanged(self) -> None:
         temporary, home = self.make_home()
@@ -858,6 +1331,18 @@ class SelectionParserTests(unittest.TestCase):
 
 
 class LauncherTests(unittest.TestCase):
+    @staticmethod
+    def _single_live_client(name: str):
+        def result(command: list[str], **kwargs: object) -> mock.Mock:
+            if command[0] == "/usr/bin/pgrep":
+                active = command[-1] == name
+                return mock.Mock(returncode=0 if active else 1, stdout="42\n" if active else "", stderr="")
+            if command[0] == "/usr/bin/ps":
+                return mock.Mock(returncode=0, stdout="S\n", stderr="")
+            raise AssertionError(command)
+
+        return result
+
     @mock.patch("codex_configure.cli.sys.platform", "linux")
     @mock.patch("codex_configure.cli.shutil.which")
     def test_linux_desktop_finds_chatgpt(self, which: mock.Mock) -> None:
@@ -923,6 +1408,105 @@ class LauncherTests(unittest.TestCase):
 
         run.side_effect = result
         self.assertEqual(Launcher({"PATH": "/usr/bin"}).running_clients(), [])
+
+    @mock.patch("codex_configure.cli.subprocess.run")
+    @mock.patch("codex_configure.cli.shutil.which", side_effect=lambda name, path=None: f"/usr/bin/{name}")
+    @mock.patch("codex_configure.cli.sys.platform", "linux")
+    def test_linux_scoped_lifecycle_ignores_global_and_other_root_clients(
+        self, which: mock.Mock, run: mock.Mock
+    ) -> None:
+        run.side_effect = self._single_live_client("chatgpt")
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        proc_root = Path(temporary.name) / "proc"
+        process = proc_root / "42"
+        process.mkdir(parents=True)
+        target_root = Path(temporary.name) / "target-root"
+        target_home = target_root / ".codex-configure" / "codex-home"
+        environment = process / "environ"
+        launcher = Launcher({"PATH": "/usr/bin"}, proc_root=proc_root)
+
+        environment.write_bytes(b"PATH=/usr/bin\0HOME=/home/test\0")
+        launcher.ensure_clients_stopped(target_home, target_root=target_root)
+
+        environment.write_bytes(
+            f"CODEX_CONFIGURE_ROOT={temporary.name}/other-root\0".encode("utf-8")
+        )
+        launcher.ensure_clients_stopped(target_home, target_root=target_root)
+
+    @mock.patch("codex_configure.cli.subprocess.run")
+    @mock.patch("codex_configure.cli.shutil.which", side_effect=lambda name, path=None: f"/usr/bin/{name}")
+    @mock.patch("codex_configure.cli.sys.platform", "linux")
+    def test_linux_scoped_lifecycle_blocks_shared_codex_home_with_boundary(
+        self, which: mock.Mock, run: mock.Mock
+    ) -> None:
+        run.side_effect = self._single_live_client("chatgpt")
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        proc_root = Path(temporary.name) / "proc"
+        process = proc_root / "42"
+        process.mkdir(parents=True)
+        target_home = Path(temporary.name) / "target-root" / ".codex-configure" / "codex-home"
+        (process / "environ").write_bytes(f"CODEX_HOME={target_home}\0".encode("utf-8"))
+
+        with self.assertRaisesRegex(UserFacingError, rf"CODEX_HOME {target_home.resolve()}"):
+            Launcher({"PATH": "/usr/bin"}, proc_root=proc_root).ensure_clients_stopped(target_home)
+
+    @mock.patch("codex_configure.cli.subprocess.run")
+    @mock.patch("codex_configure.cli.shutil.which", side_effect=lambda name, path=None: f"/usr/bin/{name}")
+    @mock.patch("codex_configure.cli.sys.platform", "linux")
+    def test_linux_scoped_lifecycle_blocks_shared_launch_root_with_boundary(
+        self, which: mock.Mock, run: mock.Mock
+    ) -> None:
+        run.side_effect = self._single_live_client("chatgpt")
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        proc_root = Path(temporary.name) / "proc"
+        process = proc_root / "42"
+        process.mkdir(parents=True)
+        target_root = Path(temporary.name) / "target-root"
+        target_home = target_root / ".codex-configure" / "codex-home"
+        (process / "environ").write_bytes(
+            f"CODEX_CONFIGURE_ROOT={target_root}\0CODEX_HOME=/other/home\0".encode("utf-8")
+        )
+
+        with self.assertRaisesRegex(UserFacingError, rf"launch root {target_root.resolve()}"):
+            Launcher({"PATH": "/usr/bin"}, proc_root=proc_root).ensure_clients_stopped(
+                target_home,
+                target_root=target_root,
+            )
+
+    @mock.patch("codex_configure.cli.subprocess.run")
+    @mock.patch("codex_configure.cli.shutil.which", side_effect=lambda name, path=None: f"/usr/bin/{name}")
+    @mock.patch("codex_configure.cli.sys.platform", "linux")
+    def test_linux_scoped_lifecycle_blocks_unattributable_client(
+        self, which: mock.Mock, run: mock.Mock
+    ) -> None:
+        run.side_effect = self._single_live_client("chatgpt")
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        proc_root = Path(temporary.name) / "proc"
+        (proc_root / "42").mkdir(parents=True)
+        target_home = Path(temporary.name) / "target-root" / ".codex-configure" / "codex-home"
+        launcher = Launcher({"PATH": "/usr/bin"}, proc_root=proc_root)
+
+        with mock.patch("codex_configure.cli.Path.read_bytes", side_effect=PermissionError("denied")):
+            with self.assertRaisesRegex(UserFacingError, "environment could not be read safely"):
+                launcher.ensure_clients_stopped(target_home)
+
+    @mock.patch("codex_configure.cli.subprocess.run")
+    @mock.patch("codex_configure.cli.shutil.which", side_effect=lambda name, path=None: f"/usr/bin/{name}")
+    @mock.patch("codex_configure.cli.sys.platform", "darwin")
+    def test_non_linux_scoped_lifecycle_remains_conservative(
+        self, which: mock.Mock, run: mock.Mock
+    ) -> None:
+        run.side_effect = self._single_live_client("ChatGPT")
+
+        with self.assertRaisesRegex(UserFacingError, "Codex or ChatGPT is running \\(ChatGPT\\)"):
+            Launcher({"PATH": "/usr/bin"}, proc_root=Path("/not-used")).ensure_clients_stopped(
+                Path("/isolated/codex-home"),
+                target_root=Path("/isolated"),
+            )
 
     @mock.patch("codex_configure.cli.shutil.which", return_value=None)
     def test_missing_pgrep_blocks_switch(self, which: mock.Mock) -> None:

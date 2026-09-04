@@ -4,10 +4,11 @@ This document records the durable design, patch-maintenance boundary, and platfo
 
 ## Scope
 
-`codex-configure` supports one stock provider and any number of named U-M GPT Toolkit services in a directory-scoped launch root:
+`codex-configure` supports one stock provider and any number of named external services in a directory-scoped launch root:
 
 - OpenAI uses Codex's existing ChatGPT authentication and bundled model catalog.
 - Each U-M service uses its own Portkey API key, static selected catalog, and short provider name.
+- Each local service uses an OpenAI-compatible Responses base URL, an optional bearer key, a narrow static catalog, and a short provider name.
 
 It deliberately provides two operating modes.
 
@@ -17,10 +18,10 @@ It deliberately provides two operating modes.
 | `launch chrome` | Configured Core in the extension native host | Configured fixed provider or Dynamic Picker |
 | `launch -- COMMAND [ARGS...]` | None (arbitrary executable) | Rooted environment only; no provider activation |
 | `run openai/cli` or `run openai/desktop` | Stock | OpenAI fixed for that launch |
-| `run name/cli` or `run name/desktop` | Stock | Named U-M service fixed for that launch |
+| `run name/cli` or `run name/desktop` | Stock | Named external service fixed for that launch |
 | `run cli` or `run desktop` | Patched | Qualified provider/model in the existing picker |
 
-Bare `codex-configure` is a read-only status operation. `init` owns context creation, repeated provider configuration, and Core/default-provider selection. Ordinary commands resolve only the exact current directory: they never search parents or fall back to a normal or legacy global Codex home. The explicit advanced `--codex-home PATH` option can manage a supplied Codex home but never creates a launcher or installs a project Core. Fixed-provider Stock Core launches support macOS and Linux. Dynamic Picker is acceptance-tested on Linux x86_64 with the Ubuntu 22.04 / glibc 2.35 baseline. Native macOS arm64 installation and launch are available as an experimental path pending the same real-Desktop acceptance boundary.
+Bare `codex-configure` is a read-only status operation. `init` owns context creation, provider management, and Core/default-provider selection through one state-driven full-screen TUI on an interactive terminal. The TUI stages profile additions/removals, an optional auth-only copy, and launch-default changes until explicit Save; a non-TTY or unavailable-curses path retains the sequential text interface. Ordinary commands resolve only the exact current directory: they never search parents or fall back to a normal or legacy global Codex home. The explicit advanced `--codex-home PATH` option can manage a supplied Codex home but never creates a launcher or installs a project Core. Fixed-provider Stock Core launches support macOS and Linux. Dynamic Picker is acceptance-tested on Linux x86_64 with the Ubuntu 22.04 / glibc 2.35 baseline. Native macOS arm64 installation and launch are available as an experimental path pending the same real-Desktop acceptance boundary.
 
 `launch -- COMMAND [ARGS...]` is the integration escape hatch for another launcher,
 such as a teaching harness. It constructs the same rooted environment, preserves the
@@ -95,6 +96,9 @@ $CODEX_HOME/
     |   `-- <shortname>.toml           # one non-secret provider descriptor
     |-- catalogs/
     |   `-- <shortname>.json           # selected Codex ModelsResponse
+    |-- cache/
+    |   |-- known-local-models-v1.json # last valid owned catalog
+    |   `-- known-local-models-v1.meta.json
     |-- profiles/
     |   |-- openai/
     |   `-- <shortname>/
@@ -143,19 +147,37 @@ requires_openai_auth = false
 env_http_headers = { "x-portkey-api-key" = "TEACHING_API_KEY" }
 ```
 
-The provider ID is inferred from the sole table key. A descriptor never contains a key value.
+The provider ID is inferred from the sole table key. A descriptor never contains a key value. A local Responses endpoint uses the same contract with `kind = "local-responses"`, its own `base_url`, and either `env_key = "LOCAL_API_KEY"` for bearer authentication or no credential field at all.
 
 `init` gets the key-scoped list from `https://api.toolkit.umgpt.umich.edu/v1/models` using `x-portkey-api-key`. It then joins endpoint IDs to complete metadata from `codex debug models --bundled`. All advertised IDs are shown, but only models with metadata supported by the installed Core can be selected. The generated JSON includes only selected complete entries.
 
-Static catalogs are authoritative. Neither `codex-configure` nor the patch treats a missing catalog as "all models," because doing so would require inventing model capabilities and prompt metadata. A bad descriptor or catalog is warned about and skipped at Core startup.
+Static provider catalogs are authoritative. Neither `codex-configure` nor the patch treats a missing catalog as "all models." U-M catalogs contain complete entries joined to the pinned Core catalog. Local catalogs use a deliberately narrow schema: slug, display text, optional description, input modalities, priority, optional context window, optional supported/default reasoning levels, and optional reasoning-summary parameter support. Core expands each local entry from its unknown-model fallback and explicitly clears unrelated bundled capabilities; it never clones another model's metadata based on a similar slug. A bad descriptor or catalog is warned about and skipped at Core startup.
 
 Catalog presence is discovery, not entitlement. A provider can still reject a listed model because of deployment access, account policy, or budget.
+
+### Owned local-model catalog
+
+Local setup and reconfiguration perform a bounded network join; launch, status, and doctor remain offline. Setup conditionally fetches `https://raw.githubusercontent.com/cab938/codex-configure/main/catalog/v1/local-models.json` over HTTPS with a 10-second timeout, 2 MiB response limit, and ETag support. That request has no endpoint credential. It then queries `<base_url>/models` with the endpoint's optional bearer credential, excludes obvious embedding and reranking IDs, and exact-matches the remaining case-sensitive IDs. There is no normalization, fuzzy matching, or alias pattern.
+
+The checked-in remote document freezes `schema_version: 1`. It records generation time, the Models.dev source URL, retrieval time and SHA-256, and one record per endpoint ID. A record contains its Models.dev ID, display metadata, reported context and input modalities, and optional sanitized probe evidence. Models.dev seeds source-owned facts, but clients never contact Models.dev and its generic schema is not treated as a Codex catalog.
+
+The join has three states:
+
+- `tested`: `/models`, streamed Responses text, and the complete standard function-call/function-output continuation all passed for the exact endpoint ID;
+- `known`: the exact ID is in the owned catalog but lacks that full baseline; and
+- `unverified`: the endpoint advertises the ID but the owned catalog does not contain it.
+
+Context is the smaller positive endpoint/catalog value, or the sole available value. Vision requires a passing image probe. Reasoning choices are exposed only for efforts whose requests passed and when a passing default is recorded; this certifies API acceptance, not a behavioral change in reasoning depth. Reasoning summaries require their separate passing check. Standard tools remain exposed for every generation model through Core's conservative fallback, while only passing evidence produces a `tools tested` claim. Native freeform patching, web search, service tiers, audio, advanced tools, multi-agent metadata, verbosity controls, and model instructions are not represented by the local schema.
+
+The last valid remote response is cached at `$CODEX_HOME/codex-configure/cache/known-local-models-v1.json`; its adjacent metadata contains the URL, ETag, response SHA-256, and fetch time. A `304` revalidates and reuses it. Network, size, decoding, JSON, schema, or version failures fall back to that validated cache with a visible setup warning. Without a valid cache, setup continues with endpoint entries marked unverified. Local `profile.toml` files written by this flow use schema v2 and record `fresh`, `cached`, or `unavailable` provenance in an optional `known_catalog` table. Existing schema-v1 profiles remain readable and retain their materialized catalogs until explicitly reconfigured.
+
+Catalog maintenance is manual. `scripts/known_model_catalog.py import` refreshes selected Models.dev records while preserving same-model evidence; `probe` emits a sanitized report; `certify` validates and merges one exact-ID report; and `validate` enforces the frozen schema and evidence gates. A reviewed commit to `main` publishes record changes without a wheel release. The live catalog is intentionally outside Python package data. A future incompatible schema receives a new URL and a coordinated client/Core release.
 
 ## Credentials
 
 OpenAI authentication remains under Codex's ownership. This project may copy a valid `auth.json` into a fresh root only after the user selects that action; it never inspects token values, edits the document, or overwrites an existing destination.
 
-Named keys live in `$CODEX_HOME/codex-configure/.env`. An explicitly exported variable with the descriptor's exact name overrides its stored value for that process. Credential loading is filtered to names declared by installed descriptors; unrelated API keys from the shell are not copied into the tool's credential map.
+Named keys live in `$CODEX_HOME/codex-configure/.env`. U-M keys are mapped to their required HTTP header; local keys use Codex's bearer `env_key` field. Local endpoints may omit authentication. An explicitly exported variable with the descriptor's exact name overrides its stored value for that process. Credential loading is filtered to names declared by installed descriptors; unrelated API keys from the shell are not copied into the tool's credential map.
 
 A stock OpenAI child receives no U-M credentials. A stock named-provider child receives only its key. A Dynamic Picker child receives the keys for all providers it exposes and refuses to launch if one is missing. The same rule applies to Chrome so its native host can authenticate without writing keys into browser or host manifests. Secrets are never written into active configuration, descriptors, catalogs, profiles, backups, diagnostics, patch resources, or canary output.
 
@@ -172,6 +194,16 @@ The first initialization snapshots the existing `config.toml` before activation.
 7. Record the new pair as last known good and clear the transaction.
 
 The tool owns only the routing fields it materializes: `model`, `model_provider`, `model_catalog_json`, and the selected provider table. Other settings and unrelated provider definitions are retained. An ambiguous routing edit is rejected rather than overwritten.
+
+Before a stock-provider launch rewrites that state, Linux lifecycle detection
+reads each matching client's `/proc/<pid>/environ` and compares its effective
+`CODEX_HOME` and root markers with the target launch root. Normal/global clients
+and clients from another root are independent and do not block. A same-root
+client or an environment that cannot be attributed safely remains blocking and
+the error identifies the conflicting boundary. Platforms without a reliable
+process-environment surface retain the conservative name-based guard. Restore
+also retains the broad guard because it is not dispatched through a particular
+launch root.
 
 Patched Core may persist a qualified model while Dynamic Picker is active. On a stock OpenAI launch, the namespace is removed from an OpenAI-qualified model such as `openai → gpt-5.6-sol`; an external-qualified model is omitted, allowing stock Core to choose a supported OpenAI default instead of sending an external namespace to ChatGPT. The former `::` separator remains accepted as a migration input for existing persisted settings.
 
@@ -268,7 +300,8 @@ A Desktop `GET /backend-api/accounts/.../settings` 401 with `Must use workspace 
 - Keep provider/model in the existing string field as `provider → model`.
 - Allow provider changes only at committed turn boundaries.
 - Keep the desktop renderer and installed package unchanged.
-- Require complete static external catalogs.
+- Require authoritative static provider catalogs, using complete bundled metadata for U-M and the narrow conservative schema for local models.
+- Resolve local metadata only during setup by exact-joining `/models` to the owned, versioned catalog; never route or refresh it at startup.
 - Keep keys in one protected tool-owned file rather than a keychain or `auth.json`.
 - Preserve and recover `config.toml` transactionally.
 - Pin and rebuild the smallest maintainable Core patch instead of vendoring Codex.

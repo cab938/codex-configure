@@ -1,5 +1,5 @@
 diff --git a/codex-rs/app-server/Cargo.toml b/codex-rs/app-server/Cargo.toml
-index 2f08b0fdc8..21201ffd03 100644
+index 2f08b0fdc831d6c3d057e906468455fbc47d38b8..21201ffd0374632cbcc5f3ad12ba725b07f09cd6 100644
 --- a/codex-rs/app-server/Cargo.toml
 +++ b/codex-rs/app-server/Cargo.toml
 @@ -75,6 +75,7 @@ codex-memories-write = { workspace = true }
@@ -19,7 +19,7 @@ index 2f08b0fdc8..21201ffd03 100644
  core_test_support = { workspace = true }
  flate2 = { workspace = true }
 diff --git a/codex-rs/app-server/src/config_manager_service.rs b/codex-rs/app-server/src/config_manager_service.rs
-index b7016229e8..d9ec9a8c68 100644
+index b7016229e8ab6a534c2112bb344025b77923fb18..d9ec9a8c688a23a4db707c0eaed9fe6570bc1e40 100644
 --- a/codex-rs/app-server/src/config_manager_service.rs
 +++ b/codex-rs/app-server/src/config_manager_service.rs
 @@ -31,6 +31,8 @@ use codex_core::path_utils;
@@ -50,7 +50,7 @@ index b7016229e8..d9ec9a8c68 100644
          let mut origins = layers.origins();
          origins.retain(|path, metadata| {
 diff --git a/codex-rs/app-server/src/config_manager_service_tests.rs b/codex-rs/app-server/src/config_manager_service_tests.rs
-index 4020d04a8f..0555772a05 100644
+index 4020d04a8fe88355549c1f0028e8ba724e6e2924..0555772a0568a93457b8eeb67304ec9da31f1848 100644
 --- a/codex-rs/app-server/src/config_manager_service_tests.rs
 +++ b/codex-rs/app-server/src/config_manager_service_tests.rs
 @@ -15,6 +15,36 @@ use codex_utils_absolute_path::AbsolutePathBuf;
@@ -91,7 +91,7 @@ index 4020d04a8f..0555772a05 100644
  fn toml_value_to_item_handles_nested_config_tables() {
      let config = r#"
 diff --git a/codex-rs/app-server/src/models.rs b/codex-rs/app-server/src/models.rs
-index 1063e64c33..7870e4699e 100644
+index 1063e64c339ab97d9717e5923a2c209e4899e038..7870e4699e7387870f6a76d5898e9d75e573c972 100644
 --- a/codex-rs/app-server/src/models.rs
 +++ b/codex-rs/app-server/src/models.rs
 @@ -5,32 +5,97 @@ use codex_app_server_protocol::ModelServiceTier;
@@ -214,7 +214,7 @@ index 1063e64c33..7870e4699e 100644
          model_specialty: preset.model_specialty,
          hidden: !preset.show_in_picker,
 diff --git a/codex-rs/app-server/src/request_processors/catalog_processor.rs b/codex-rs/app-server/src/request_processors/catalog_processor.rs
-index 9c7bd4e806..de4e058960 100644
+index 9c7bd4e80690050bc9578cb37f340fb6c92420e0..de4e0589600f48591ab82e4e18151c74bc83a055 100644
 --- a/codex-rs/app-server/src/request_processors/catalog_processor.rs
 +++ b/codex-rs/app-server/src/request_processors/catalog_processor.rs
 @@ -173,6 +173,7 @@ impl CatalogRequestProcessor {
@@ -242,7 +242,7 @@ index 9c7bd4e806..de4e058960 100644
          .await;
          let total = models.len();
 diff --git a/codex-rs/app-server/src/request_processors/persisted_resume_settings.rs b/codex-rs/app-server/src/request_processors/persisted_resume_settings.rs
-index 5e408b02c9..112e1f5151 100644
+index 5e408b02c94341c9e6de2a71ca282eeb0b2cdc7e..ffe412e66b8f5424375a4152319744ff34528437 100644
 --- a/codex-rs/app-server/src/request_processors/persisted_resume_settings.rs
 +++ b/codex-rs/app-server/src/request_processors/persisted_resume_settings.rs
 @@ -1,3 +1,5 @@
@@ -260,7 +260,7 @@ index 5e408b02c9..112e1f5151 100644
      pub(super) approval_policy: AskForApproval,
      pub(super) approvals_reviewer: Option<ApprovalsReviewer>,
      pub(super) active_permission_profile: Option<ActivePermissionProfile>,
-@@ -19,21 +23,48 @@ pub(super) fn latest_persisted_resume_settings(
+@@ -19,21 +23,52 @@ pub(super) fn latest_persisted_resume_settings(
          .enumerate()
          .rev()
          .find_map(|(index, item)| match item {
@@ -311,13 +311,17 @@ index 5e408b02c9..112e1f5151 100644
 +                })
 +            }
              RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
++                let provider_id = &event.thread_settings.model_provider_id;
                  Some(PersistedResumeSettings {
-+                    model: Some(canonicalize_persisted_model(&event.thread_settings.model)),
-+                    model_provider_id: Some(event.thread_settings.model_provider_id.clone()),
++                    model: Some(qualify_persisted_model(
++                        provider_id,
++                        &event.thread_settings.model,
++                    )),
++                    model_provider_id: Some(provider_id.clone()),
                      approval_policy: event.thread_settings.approval_policy,
                      approvals_reviewer: Some(event.thread_settings.approvals_reviewer),
                      active_permission_profile: event
-@@ -46,6 +77,28 @@ pub(super) fn latest_persisted_resume_settings(
+@@ -46,6 +81,28 @@ pub(super) fn latest_persisted_resume_settings(
          })
  }
  
@@ -335,7 +339,7 @@ index 5e408b02c9..112e1f5151 100644
 +        .unwrap_or_else(|| model.to_string())
 +}
 +
-+fn qualify_persisted_model(provider_id: &str, model: &str) -> String {
++pub(super) fn qualify_persisted_model(provider_id: &str, model: &str) -> String {
 +    match canonicalize_qualified_model(model) {
 +        Ok(Some(model)) => model,
 +        Ok(None) => format_qualified_model(provider_id, model),
@@ -347,7 +351,7 @@ index 5e408b02c9..112e1f5151 100644
  #[path = "persisted_resume_settings_tests.rs"]
  mod tests;
 diff --git a/codex-rs/app-server/src/request_processors/persisted_resume_settings_tests.rs b/codex-rs/app-server/src/request_processors/persisted_resume_settings_tests.rs
-index 98ab3f59a2..11c99914d2 100644
+index 98ab3f59a221c8f9ef17acb13aa75a550c63599e..05b9419415f47e9caab519ff9bd43d21d765df0f 100644
 --- a/codex-rs/app-server/src/request_processors/persisted_resume_settings_tests.rs
 +++ b/codex-rs/app-server/src/request_processors/persisted_resume_settings_tests.rs
 @@ -25,12 +25,28 @@ fn settings_item(
@@ -417,7 +421,7 @@ index 98ab3f59a2..11c99914d2 100644
  #[test]
  fn latest_settings_snapshot_wins() {
      let expected = PersistedResumeSettings {
-+        model: Some("gpt-5".to_string()),
++        model: Some("openai → gpt-5".to_string()),
 +        model_provider_id: Some("openai".to_string()),
          approval_policy: AskForApproval::OnRequest,
          approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
@@ -477,7 +481,7 @@ index 98ab3f59a2..11c99914d2 100644
 +    assert_eq!(
 +        latest_persisted_resume_settings(&history),
 +        Some(PersistedResumeSettings {
-+            model: Some("toolkit-model".to_string()),
++            model: Some("umich-toolkit → toolkit-model".to_string()),
 +            model_provider_id: Some("umich-toolkit".to_string()),
 +            approval_policy: AskForApproval::Never,
 +            approvals_reviewer: Some(ApprovalsReviewer::User),
@@ -504,10 +508,29 @@ index 98ab3f59a2..11c99914d2 100644
              approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
              active_permission_profile: None,
 diff --git a/codex-rs/app-server/src/request_processors/thread_processor.rs b/codex-rs/app-server/src/request_processors/thread_processor.rs
-index 0803fb1445..1ebc8bb19b 100644
+index 0803fb1445ef0dad635a8199623657125a84d355..f0ca48f7fde4f9a06d5a11832a59c9236344328f 100644
 --- a/codex-rs/app-server/src/request_processors/thread_processor.rs
 +++ b/codex-rs/app-server/src/request_processors/thread_processor.rs
-@@ -232,6 +232,24 @@ fn merge_persisted_resume_metadata(
+@@ -1,5 +1,6 @@
+ use super::persisted_resume_settings::PersistedResumeSettings;
+ use super::persisted_resume_settings::latest_persisted_resume_settings;
++use super::persisted_resume_settings::qualify_persisted_model;
+ use super::thread_enrichment::enrich_loaded_threads;
+ use super::thread_fork_goal::inherit_thread_goal_snapshot;
+ use super::thread_input::can_accept_direct_input;
+@@ -221,7 +222,10 @@ fn merge_persisted_resume_metadata(
+         return;
+     }
+ 
+-    typesafe_overrides.model = persisted_metadata.model.clone();
++    typesafe_overrides.model = persisted_metadata
++        .model
++        .as_deref()
++        .map(|model| qualify_persisted_model(&persisted_metadata.model_provider, model));
+     typesafe_overrides.model_provider = Some(persisted_metadata.model_provider.clone());
+ 
+     if let Some(reasoning_effort) = persisted_metadata.reasoning_effort.as_ref() {
+@@ -232,6 +236,27 @@ fn merge_persisted_resume_metadata(
      }
  }
  
@@ -525,14 +548,17 @@ index 0803fb1445..1ebc8bb19b 100644
 +    let Some(model_provider_id) = persisted_settings.model_provider_id.as_ref() else {
 +        return;
 +    };
-+    typesafe_overrides.model = persisted_settings.model.clone();
++    typesafe_overrides.model = persisted_settings
++        .model
++        .as_deref()
++        .map(|model| qualify_persisted_model(model_provider_id, model));
 +    typesafe_overrides.model_provider = Some(model_provider_id.clone());
 +}
 +
  fn normalize_thread_list_cwd_filters(
      cwd: Option<ThreadListCwdFilter>,
  ) -> Result<Option<Vec<PathBuf>>, JSONRPCErrorError> {
-@@ -4036,6 +4054,11 @@ impl ThreadRequestProcessor {
+@@ -4036,6 +4061,11 @@ impl ThreadRequestProcessor {
          };
          if let Some(persisted_settings) = latest_persisted_resume_settings(&resumed_history.history)
          {
@@ -544,7 +570,7 @@ index 0803fb1445..1ebc8bb19b 100644
              if typesafe_overrides.approval_policy.is_none() {
                  typesafe_overrides.approval_policy = Some(persisted_settings.approval_policy);
              }
-@@ -4820,12 +4843,18 @@ impl ThreadRequestProcessor {
+@@ -4820,12 +4850,18 @@ impl ThreadRequestProcessor {
                  .is_some_and(|overrides| overrides.contains_key("approvals_reviewer"));
          let restore_permission_profile =
              !has_permission_override(request_overrides.as_ref(), &typesafe_overrides);
@@ -565,7 +591,7 @@ index 0803fb1445..1ebc8bb19b 100644
                      approval_policy: snapshot.approval_policy,
                      approvals_reviewer: Some(snapshot.approvals_reviewer),
                      active_permission_profile: snapshot.active_permission_profile,
-@@ -4862,6 +4891,13 @@ impl ThreadRequestProcessor {
+@@ -4862,6 +4898,13 @@ impl ThreadRequestProcessor {
              )
          });
          if let Some(persisted_settings) = persisted_settings {
@@ -580,10 +606,19 @@ index 0803fb1445..1ebc8bb19b 100644
                  typesafe_overrides.approval_policy = Some(persisted_settings.approval_policy);
              }
 diff --git a/codex-rs/app-server/src/request_processors/thread_processor_tests.rs b/codex-rs/app-server/src/request_processors/thread_processor_tests.rs
-index ffba9ba44f..8befeff7d6 100644
+index ffba9ba44f13e4f4045b5ced0f4af70838712614..448e2fc62e12a19a3cededf9023140a768c5e329 100644
 --- a/codex-rs/app-server/src/request_processors/thread_processor_tests.rs
 +++ b/codex-rs/app-server/src/request_processors/thread_processor_tests.rs
-@@ -779,6 +779,43 @@ mod thread_processor_behavior_tests {
+@@ -763,7 +763,7 @@ mod thread_processor_behavior_tests {
+ 
+         assert_eq!(
+             typesafe_overrides.model,
+-            Some("gpt-5.1-codex-max".to_string())
++            Some("mock_provider → gpt-5.1-codex-max".to_string())
+         );
+         assert_eq!(
+             typesafe_overrides.model_provider,
+@@ -779,6 +779,46 @@ mod thread_processor_behavior_tests {
          Ok(())
      }
  
@@ -600,7 +635,10 @@ index ffba9ba44f..8befeff7d6 100644
 +
 +        apply_persisted_resume_model_provider(None, &mut typesafe_overrides, &persisted_settings);
 +
-+        assert_eq!(typesafe_overrides.model, Some("toolkit-model".to_string()));
++        assert_eq!(
++            typesafe_overrides.model,
++            Some("umich-toolkit → toolkit-model".to_string())
++        );
 +        assert_eq!(
 +            typesafe_overrides.model_provider,
 +            Some("umich-toolkit".to_string())
@@ -628,7 +666,7 @@ index ffba9ba44f..8befeff7d6 100644
      fn merge_persisted_resume_metadata_preserves_explicit_overrides() -> Result<()> {
          let mut request_overrides = Some(HashMap::from([(
 diff --git a/codex-rs/app-server/tests/suite/v2/model_list.rs b/codex-rs/app-server/tests/suite/v2/model_list.rs
-index 7e21fb6d8e..1f405f79ae 100644
+index 7e21fb6d8e2967fce1f1f34bbdaaa6ab0b53b9e3..1f405f79ae502b83346a649eab2cad75a9c8988d 100644
 --- a/codex-rs/app-server/tests/suite/v2/model_list.rs
 +++ b/codex-rs/app-server/tests/suite/v2/model_list.rs
 @@ -31,12 +31,13 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -774,7 +812,7 @@ index 7e21fb6d8e..1f405f79ae 100644
  async fn list_models_rejects_invalid_cursor() -> Result<()> {
      let codex_home = TempDir::new()?;
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index 19f3c4ec21..324e29cd95 100644
+index 19f3c4ec21c75f6d8a44c18f2d0b4bb96920e826..324e29cd950fd67551736e4e857123234702b153 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
 @@ -528,6 +528,56 @@ impl ModelClient {
@@ -846,7 +884,7 @@ index 19f3c4ec21..324e29cd95 100644
          Arc::clone(&self.turn_state)
      }
 diff --git a/codex-rs/core/src/client_tests.rs b/codex-rs/core/src/client_tests.rs
-index f686257772..19d776083e 100644
+index f6862577723c0e73c047080d367b6a2c04c8124a..19d776083e57a869d3aeb108514ed7bfc0941cae 100644
 --- a/codex-rs/core/src/client_tests.rs
 +++ b/codex-rs/core/src/client_tests.rs
 @@ -1191,3 +1191,21 @@ async fn non_chatgpt_codex_endpoints_omit_attestation_generation() {
@@ -872,7 +910,7 @@ index f686257772..19d776083e 100644
 +    assert!(!Arc::ptr_eq(&session.client.state, &client.state));
 +}
 diff --git a/codex-rs/core/src/codex_delegate.rs b/codex-rs/core/src/codex_delegate.rs
-index 0a74f925e1..5fdf111ff7 100644
+index 0a74f925e1f2ebd3eea37f7af38913dcd79ccf63..5fdf111ff78632a990941ec1dea8ab54e39ad8cf 100644
 --- a/codex-rs/core/src/codex_delegate.rs
 +++ b/codex-rs/core/src/codex_delegate.rs
 @@ -118,6 +118,7 @@ pub(crate) async fn run_codex_thread_interactive(
@@ -884,7 +922,7 @@ index 0a74f925e1..5fdf111ff7 100644
              .services
              .turn_environments
 diff --git a/codex-rs/core/src/compact.rs b/codex-rs/core/src/compact.rs
-index 3ddbea4463..1525bb3979 100644
+index 3ddbea44633ab34a152bd22ce9622b34afc6e3ca..1525bb3979aa58213b06de4403863e6d9fb9d08f 100644
 --- a/codex-rs/core/src/compact.rs
 +++ b/codex-rs/core/src/compact.rs
 @@ -262,7 +262,10 @@ async fn run_compact_task_inner_impl(
@@ -900,7 +938,7 @@ index 3ddbea4463..1525bb3979 100644
      // request tracking)
      // survives retries within this compact turn.
 diff --git a/codex-rs/core/src/compact_remote_v2_attempt.rs b/codex-rs/core/src/compact_remote_v2_attempt.rs
-index 9569649f8b..b9d9567113 100644
+index 9569649f8b47420f8cc9fb2704ce271a5047161e..b9d9567113784663b428d1d3942ae6c884ad5d22 100644
 --- a/codex-rs/core/src/compact_remote_v2_attempt.rs
 +++ b/codex-rs/core/src/compact_remote_v2_attempt.rs
 @@ -100,7 +100,11 @@ pub(super) async fn run_remote_compact_v2_attempt(
@@ -917,7 +955,7 @@ index 9569649f8b..b9d9567113 100644
      let compaction_output_result = run_remote_compaction_request_v2(
          sess,
 diff --git a/codex-rs/core/src/config/config_tests.rs b/codex-rs/core/src/config/config_tests.rs
-index 4cc4bc7e90..83ab50471c 100644
+index 4cc4bc7e907d25860c2a14d19d36b3349c2916d9..83ab50471c1e8c6d03b1d4926b3ae548ce9b9fc3 100644
 --- a/codex-rs/core/src/config/config_tests.rs
 +++ b/codex-rs/core/src/config/config_tests.rs
 @@ -950,6 +950,149 @@ profile = "codex-bedrock"
@@ -1071,7 +1109,7 @@ index 4cc4bc7e90..83ab50471c 100644
  async fn managed_residency_warns_about_provider_header_overrides_without_mutating_config()
  -> std::io::Result<()> {
 diff --git a/codex-rs/core/src/config/mod.rs b/codex-rs/core/src/config/mod.rs
-index 9c1b419903..a331db048b 100644
+index 9c1b419903aa3022feac376e830b2a27e1b9c2d0..a331db048b9abf5b61ab0b86e2b848d3a4ba4392 100644
 --- a/codex-rs/core/src/config/mod.rs
 +++ b/codex-rs/core/src/config/mod.rs
 @@ -1,6 +1,7 @@
@@ -1215,7 +1253,7 @@ index 9c1b419903..a331db048b 100644
              chatgpt_base_url: cfg
                  .chatgpt_base_url
 diff --git a/codex-rs/core/src/context_manager/history.rs b/codex-rs/core/src/context_manager/history.rs
-index 2d9b647321..9908e3a2cd 100644
+index 2d9b647321b99673344d615795ea26352772376d..9908e3a2cdd4016ba212b86db6712ee10f005c65 100644
 --- a/codex-rs/core/src/context_manager/history.rs
 +++ b/codex-rs/core/src/context_manager/history.rs
 @@ -306,6 +306,20 @@ impl ContextManager {
@@ -1240,7 +1278,7 @@ index 2d9b647321..9908e3a2cd 100644
      ///
      /// Instruction turns are history messages that should behave like a new prompt boundary:
 diff --git a/codex-rs/core/src/context_manager/history_tests.rs b/codex-rs/core/src/context_manager/history_tests.rs
-index 190f617bda..8190cd4f3f 100644
+index 190f617bdaa5b60cafd41ec08356a85e5badc568..8190cd4f3fe2af03427b6d8dcf5dd91ee9fd3be6 100644
 --- a/codex-rs/core/src/context_manager/history_tests.rs
 +++ b/codex-rs/core/src/context_manager/history_tests.rs
 @@ -411,6 +411,26 @@ fn filters_non_api_messages() {
@@ -1272,10 +1310,10 @@ index 190f617bda..8190cd4f3f 100644
      let history =
 diff --git a/codex-rs/core/src/external_provider_catalogs.rs b/codex-rs/core/src/external_provider_catalogs.rs
 new file mode 100644
-index 0000000000..f9552c878d
+index 0000000000000000000000000000000000000000..9e3cef1989a84e1ae9e32817ca655b6951bb1124
 --- /dev/null
 +++ b/codex-rs/core/src/external_provider_catalogs.rs
-@@ -0,0 +1,261 @@
+@@ -0,0 +1,572 @@
 +//! Startup-loaded provider descriptors owned by codex-configure.
 +//!
 +//! The launcher writes one descriptor per provider beneath
@@ -1285,7 +1323,14 @@ index 0000000000..f9552c878d
 +
 +use codex_model_provider_info::ModelProviderInfo;
 +use codex_model_provider_info::built_in_model_providers;
++use codex_models_manager::model_info::model_info_from_slug;
++use codex_protocol::config_types::ReasoningSummary;
++use codex_protocol::openai_models::InputModality;
++use codex_protocol::openai_models::ModelVisibility;
 +use codex_protocol::openai_models::ModelsResponse;
++use codex_protocol::openai_models::ReasoningEffort;
++use codex_protocol::openai_models::ReasoningEffortPreset;
++use serde::Deserialize;
 +use std::collections::HashMap;
 +use std::collections::HashSet;
 +use std::fs;
@@ -1294,6 +1339,39 @@ index 0000000000..f9552c878d
 +const CONFIGURE_DIR: &str = "codex-configure";
 +const PROVIDERS_DIR: &str = "providers.d";
 +const DESCRIPTOR_EXTENSION: &str = "toml";
++const LOCAL_RESPONSES_KIND: &str = "local-responses";
++
++#[derive(Debug, Deserialize)]
++#[serde(deny_unknown_fields)]
++struct LocalModelsResponse {
++    models: Vec<LocalModel>,
++}
++
++#[derive(Debug, Deserialize)]
++#[serde(deny_unknown_fields)]
++struct LocalModel {
++    slug: String,
++    #[serde(default)]
++    display_name: Option<String>,
++    #[serde(default)]
++    description: Option<String>,
++    #[serde(default)]
++    context_window: Option<i64>,
++    #[serde(default = "text_input_modality")]
++    input_modalities: Vec<InputModality>,
++    #[serde(default)]
++    supported_reasoning_levels: Vec<ReasoningEffortPreset>,
++    #[serde(default)]
++    default_reasoning_level: Option<ReasoningEffort>,
++    #[serde(default)]
++    supports_reasoning_summary_parameter: bool,
++    #[serde(default)]
++    priority: Option<i32>,
++}
++
++fn text_input_modality() -> Vec<InputModality> {
++    vec![InputModality::Text]
++}
 +
 +/// Providers and catalogs that were valid at startup.
 +#[derive(Debug, Default)]
@@ -1404,6 +1482,10 @@ index 0000000000..f9552c878d
 +        .and_then(toml::Value::as_str)
 +        .filter(|path| !path.trim().is_empty())
 +        .ok_or_else(|| "`model_catalog_json` must be a non-empty path".to_string())?;
++    let descriptor_kind = root
++        .get("kind")
++        .and_then(toml::Value::as_str)
++        .unwrap_or("external");
 +    let provider: ModelProviderInfo = toml::Value::Table(provider_table.clone())
 +        .try_into()
 +        .map_err(|error| format!("provider definition is invalid: {error}"))?;
@@ -1424,12 +1506,7 @@ index 0000000000..f9552c878d
 +            catalog_path.display()
 +        )
 +    })?;
-+    let catalog: ModelsResponse = serde_json::from_str(&catalog_text).map_err(|error| {
-+        format!(
-+            "model catalog `{}` is not valid Codex ModelsResponse JSON: {error}",
-+            catalog_path.display()
-+        )
-+    })?;
++    let catalog = parse_catalog(&catalog_text, &catalog_path, descriptor_kind)?;
 +    if catalog.models.is_empty() {
 +        return Err(format!(
 +            "model catalog `{}` must contain at least one model",
@@ -1437,6 +1514,165 @@ index 0000000000..f9552c878d
 +        ));
 +    }
 +    Ok((provider_id.clone(), provider, catalog))
++}
++
++fn parse_catalog(
++    catalog_text: &str,
++    catalog_path: &Path,
++    descriptor_kind: &str,
++) -> Result<ModelsResponse, String> {
++    if descriptor_kind != LOCAL_RESPONSES_KIND {
++        return serde_json::from_str(catalog_text).map_err(|error| {
++            format!(
++                "model catalog `{}` is not valid Codex ModelsResponse JSON: {error}",
++                catalog_path.display()
++            )
++        });
++    }
++
++    let local: LocalModelsResponse = serde_json::from_str(catalog_text).map_err(|error| {
++        format!(
++            "local model catalog `{}` is invalid: {error}",
++            catalog_path.display()
++        )
++    })?;
++    let mut seen = HashSet::new();
++    let mut models = Vec::with_capacity(local.models.len());
++    for (index, entry) in local.models.into_iter().enumerate() {
++        if entry.slug.trim().is_empty() {
++            return Err(format!(
++                "local model catalog `{}` contains an empty model slug",
++                catalog_path.display()
++            ));
++        }
++        if !seen.insert(entry.slug.clone()) {
++            return Err(format!(
++                "local model catalog `{}` contains duplicate model `{}`",
++                catalog_path.display(),
++                entry.slug
++            ));
++        }
++        if entry.context_window.is_some_and(|value| value <= 0) {
++            return Err(format!(
++                "local model catalog `{}` gives model `{}` a non-positive context window",
++                catalog_path.display(),
++                entry.slug
++            ));
++        }
++        if entry.input_modalities.is_empty()
++            || !entry.input_modalities.contains(&InputModality::Text)
++            || entry
++                .input_modalities
++                .iter()
++                .any(|modality| !matches!(*modality, InputModality::Text | InputModality::Image))
++        {
++            return Err(format!(
++                "local model catalog `{}` must declare only text/image input, including text, for model `{}`",
++                catalog_path.display(),
++                entry.slug
++            ));
++        }
++        let mut reasoning_efforts = HashSet::new();
++        for preset in &entry.supported_reasoning_levels {
++            if preset.description.trim().is_empty() {
++                return Err(format!(
++                    "local model catalog `{}` gives model `{}` an empty reasoning description",
++                    catalog_path.display(),
++                    entry.slug
++                ));
++            }
++            if matches!(preset.effort, ReasoningEffort::Custom(_)) {
++                return Err(format!(
++                    "local model catalog `{}` gives model `{}` a custom reasoning effort",
++                    catalog_path.display(),
++                    entry.slug
++                ));
++            }
++            if !reasoning_efforts.insert(preset.effort.clone()) {
++                return Err(format!(
++                    "local model catalog `{}` gives model `{}` a duplicate reasoning effort",
++                    catalog_path.display(),
++                    entry.slug
++                ));
++            }
++        }
++        if entry
++            .default_reasoning_level
++            .as_ref()
++            .is_some_and(|default| {
++                !entry
++                    .supported_reasoning_levels
++                    .iter()
++                    .any(|preset| &preset.effort == default)
++            })
++        {
++            return Err(format!(
++                "local model catalog `{}` gives model `{}` a default reasoning effort that is not supported",
++                catalog_path.display(),
++                entry.slug
++            ));
++        }
++        if entry.priority.is_some_and(|value| value <= 0) {
++            return Err(format!(
++                "local model catalog `{}` gives model `{}` a non-positive priority",
++                catalog_path.display(),
++                entry.slug
++            ));
++        }
++
++        // Build from a guaranteed-generic unknown-model fallback before
++        // applying the endpoint slug. This avoids inheriting slug-specific
++        // instruction templates if a local ID happens to match one that Core
++        // recognizes specially.
++        let mut model = model_info_from_slug("codex-configure-local-fallback");
++        model.slug = entry.slug.clone();
++        if let Some(display_name) = entry.display_name {
++            if display_name.trim().is_empty() {
++                return Err(format!(
++                    "local model catalog `{}` gives model `{}` an empty display name",
++                    catalog_path.display(),
++                    entry.slug
++                ));
++            }
++            model.display_name = display_name;
++        }
++        model.description = entry.description;
++        model.visibility = ModelVisibility::List;
++        model.priority = entry.priority.unwrap_or(index as i32 + 1);
++        model.context_window = entry.context_window;
++        model.max_context_window = entry.context_window;
++        model.input_modalities = entry.input_modalities;
++        model.supported_reasoning_levels = entry.supported_reasoning_levels;
++        model.default_reasoning_level = entry.default_reasoning_level;
++        model.supports_reasoning_summary_parameter = entry.supports_reasoning_summary_parameter;
++        model.default_reasoning_summary = if entry.supports_reasoning_summary_parameter {
++            ReasoningSummary::Auto
++        } else {
++            ReasoningSummary::None
++        };
++        // Standard function tools deliberately retain the fallback UnifiedExec
++        // surface. All other advanced capabilities remain disabled because the
++        // narrow local schema cannot advertise them.
++        model.apply_patch_tool_type = None;
++        model.supports_search_tool = false;
++        model.experimental_supported_tools.clear();
++        model.additional_speed_tiers.clear();
++        model.service_tiers.clear();
++        model.default_service_tier = None;
++        model.include_skills_usage_instructions = false;
++        model.include_plugin_usage_instructions = false;
++        model.include_apps_usage_instructions = false;
++        model.support_verbosity = false;
++        model.default_verbosity = None;
++        model.tool_mode = None;
++        model.multi_agent_version = None;
++        model.use_responses_lite = false;
++        // The fallback factory supplies conservative capabilities for unknown
++        // slugs, but this slug is resolved by the explicit local catalog.
++        model.used_fallback_model_metadata = false;
++        models.push(model);
++    }
++    Ok(ModelsResponse { models })
 +}
 +
 +fn validate_provider_id(provider_id: &str) -> Result<(), String> {
@@ -1492,6 +1728,16 @@ index 0000000000..f9552c878d
 +        .expect("descriptor");
 +    }
 +
++    fn local_descriptor(path: &Path, id: &str, catalog: &str) {
++        fs::write(
++            path,
++            format!(
++                "schema_version = 1\nkind = \"local-responses\"\nmodel_catalog_json = \"{catalog}\"\n\n[model_providers.{id}]\nname = \"Local Test\"\nbase_url = \"http://127.0.0.1:1337/v1\"\nwire_api = \"responses\"\nenv_key = \"LOCAL_API_KEY\"\n"
++            ),
++        )
++        .expect("descriptor");
++    }
++
 +    #[test]
 +    fn loads_static_catalogs_relative_to_descriptor_and_sorts_filenames() {
 +        let temp = tempfile::tempdir().expect("tempdir");
@@ -1536,9 +1782,112 @@ index 0000000000..f9552c878d
 +        );
 +        assert_eq!(loaded.warnings.len(), 4);
 +    }
++
++    #[test]
++    fn expands_local_catalog_with_conservative_core_metadata() {
++        let temp = tempfile::tempdir().expect("tempdir");
++        let providers = temp.path().join(CONFIGURE_DIR).join(PROVIDERS_DIR);
++        fs::create_dir_all(&providers).expect("providers");
++        fs::write(
++            providers.join("local.json"),
++            r#"{"models":[{"slug":"local-coder","display_name":"Local Coder","description":"Loopback model","context_window":16384,"input_modalities":["text","image"],"supported_reasoning_levels":[{"effort":"low","description":"Low"},{"effort":"medium","description":"Medium"}],"default_reasoning_level":"medium","supports_reasoning_summary_parameter":true,"priority":1}]}"#,
++        )
++        .expect("catalog");
++        local_descriptor(&providers.join("local.toml"), "local", "local.json");
++
++        let loaded = load(temp.path(), &HashSet::new());
++        let model = &loaded.catalogs["local"].models[0];
++        assert_eq!(model.slug, "local-coder");
++        assert_eq!(model.display_name, "Local Coder");
++        assert_eq!(model.visibility, ModelVisibility::List);
++        assert_eq!(model.context_window, Some(16_384));
++        assert_eq!(model.max_context_window, Some(16_384));
++        assert_eq!(
++            model.input_modalities,
++            vec![InputModality::Text, InputModality::Image]
++        );
++        assert_eq!(
++            model
++                .supported_reasoning_levels
++                .iter()
++                .map(|preset| preset.effort.clone())
++                .collect::<Vec<_>>(),
++            vec![ReasoningEffort::Low, ReasoningEffort::Medium]
++        );
++        assert_eq!(model.default_reasoning_level, Some(ReasoningEffort::Medium));
++        assert!(model.supports_reasoning_summary_parameter);
++        assert_eq!(
++            model.shell_type,
++            codex_protocol::openai_models::ConfigShellToolType::UnifiedExec
++        );
++        assert!(model.apply_patch_tool_type.is_none());
++        assert!(!model.supports_search_tool);
++        assert!(model.experimental_supported_tools.is_empty());
++        assert!(model.multi_agent_version.is_none());
++        assert!(!model.used_fallback_model_metadata);
++        assert!(loaded.warnings.is_empty());
++    }
++
++    #[test]
++    fn local_catalog_without_evidence_keeps_conservative_defaults() {
++        let catalog = r#"{"models":[{"slug":"gpt-5.2-codex"}]}"#;
++        let parsed = parse_catalog(catalog, Path::new("local.json"), LOCAL_RESPONSES_KIND)
++            .expect("minimal local model should parse");
++        let model = &parsed.models[0];
++
++        assert_eq!(model.slug, "gpt-5.2-codex");
++        assert_eq!(model.input_modalities, vec![InputModality::Text]);
++        assert!(model.supported_reasoning_levels.is_empty());
++        assert!(model.default_reasoning_level.is_none());
++        assert!(!model.supports_reasoning_summary_parameter);
++        assert_eq!(model.default_reasoning_summary, ReasoningSummary::None);
++        assert!(
++            model
++                .model_messages
++                .as_ref()
++                .is_some_and(|messages| messages.instructions_variables.is_none())
++        );
++        assert!(model.additional_speed_tiers.is_empty());
++        assert!(model.service_tiers.is_empty());
++        assert!(model.default_service_tier.is_none());
++        assert!(!model.include_skills_usage_instructions);
++        assert!(!model.include_plugin_usage_instructions);
++        assert!(!model.include_apps_usage_instructions);
++        assert!(!model.support_verbosity);
++        assert!(model.default_verbosity.is_none());
++        assert!(model.tool_mode.is_none());
++        assert!(model.multi_agent_version.is_none());
++        assert!(!model.use_responses_lite);
++    }
++
++    #[test]
++    fn rejects_duplicate_local_models() {
++        let catalog = r#"{"models":[{"slug":"same"},{"slug":"same"}]}"#;
++        let error = parse_catalog(catalog, Path::new("local.json"), LOCAL_RESPONSES_KIND)
++            .expect_err("duplicate local slugs must fail");
++        assert!(error.contains("duplicate model `same`"));
++    }
++
++    #[test]
++    fn rejects_unproven_or_out_of_scope_local_capabilities() {
++        let bad_default = r#"{"models":[{"slug":"local","supported_reasoning_levels":[{"effort":"low","description":"Low"}],"default_reasoning_level":"high"}]}"#;
++        let error = parse_catalog(bad_default, Path::new("local.json"), LOCAL_RESPONSES_KIND)
++            .expect_err("unsupported default reasoning effort must fail");
++        assert!(error.contains("default reasoning effort that is not supported"));
++
++        let audio = r#"{"models":[{"slug":"local","input_modalities":["text","audio"]}]}"#;
++        let error = parse_catalog(audio, Path::new("local.json"), LOCAL_RESPONSES_KIND)
++            .expect_err("audio must remain outside the narrow local schema");
++        assert!(error.contains("only text/image input"));
++
++        let arbitrary = r#"{"models":[{"slug":"local","apply_patch_tool_type":"freeform"}]}"#;
++        let error = parse_catalog(arbitrary, Path::new("local.json"), LOCAL_RESPONSES_KIND)
++            .expect_err("arbitrary ModelInfo fields must fail");
++        assert!(error.contains("unknown field"));
++    }
 +}
 diff --git a/codex-rs/core/src/guardian/review.rs b/codex-rs/core/src/guardian/review.rs
-index 145fa12dcb..c34ab70e6d 100644
+index 145fa12dcb5f5777005544230d4fcaf65ae3cdb0..c34ab70e6dd6343f9dbe66eacc4cbd2a38c9424b 100644
 --- a/codex-rs/core/src/guardian/review.rs
 +++ b/codex-rs/core/src/guardian/review.rs
 @@ -831,8 +831,7 @@ pub(super) async fn guardian_review_session_config(
@@ -1562,7 +1911,7 @@ index 145fa12dcb..c34ab70e6d 100644
          .get_model_info(
              guardian_model.as_str(),
 diff --git a/codex-rs/core/src/guardian/review_session.rs b/codex-rs/core/src/guardian/review_session.rs
-index 9ce3976537..070032f57e 100644
+index 9ce3976537f5baee2bd1cfacca0d015929984761..070032f57ea5998020c91a6def98ac8447985c32 100644
 --- a/codex-rs/core/src/guardian/review_session.rs
 +++ b/codex-rs/core/src/guardian/review_session.rs
 @@ -855,7 +855,7 @@ async fn spawn_guardian_review_session(
@@ -1586,7 +1935,7 @@ index 9ce3976537..070032f57e 100644
          .get_model_info(
              params.model.as_str(),
 diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
-index 8463ae9e16..17799b38f6 100644
+index 8463ae9e16e997cebd910419f7cf8052b6b97f84..17799b38f6ad22a0a019a67823a524b3386dfae7 100644
 --- a/codex-rs/core/src/lib.rs
 +++ b/codex-rs/core/src/lib.rs
 @@ -64,6 +64,7 @@ mod environment_selection;
@@ -1607,7 +1956,7 @@ index 8463ae9e16..17799b38f6 100644
  mod session_prefix;
 diff --git a/codex-rs/core/src/provider_runtime.rs b/codex-rs/core/src/provider_runtime.rs
 new file mode 100644
-index 0000000000..1d0ea1a7ad
+index 0000000000000000000000000000000000000000..1d0ea1a7ad9d32d5f8e95190d052e40e9a44f926
 --- /dev/null
 +++ b/codex-rs/core/src/provider_runtime.rs
 @@ -0,0 +1,171 @@
@@ -1784,7 +2133,7 @@ index 0000000000..1d0ea1a7ad
 +mod tests;
 diff --git a/codex-rs/core/src/provider_runtime_tests.rs b/codex-rs/core/src/provider_runtime_tests.rs
 new file mode 100644
-index 0000000000..e09bf6a880
+index 0000000000000000000000000000000000000000..e09bf6a880a9b7638998740b39e9eb01ed2a1962
 --- /dev/null
 +++ b/codex-rs/core/src/provider_runtime_tests.rs
 @@ -0,0 +1,63 @@
@@ -1852,7 +2201,7 @@ index 0000000000..e09bf6a880
 +    assert_eq!(runtime.provider.info().name, "umich-toolkit");
 +}
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
-index 04d47879e0..e1c6d2c7c5 100644
+index 04d47879e087b583fb05bce1b927c0f170dd631d..516e0a6fbde842cd574d803e49ce101f2969a5ab 100644
 --- a/codex-rs/core/src/session/mod.rs
 +++ b/codex-rs/core/src/session/mod.rs
 @@ -39,6 +39,8 @@ use crate::image_preparation::ImageResizeNoticeMode;
@@ -1945,18 +2294,21 @@ index 04d47879e0..e1c6d2c7c5 100644
              let environment_config = updated.inferred_environment_config();
              if let Some(environments) = &updates.environments {
                  self.services
-@@ -1664,6 +1695,9 @@ impl Session {
+@@ -1664,6 +1695,12 @@ impl Session {
                      .turn_environments
                      .update_thread_config(&environment_config);
              }
 +            if provider_changed {
 +                state.history.drop_provider_bound_items();
++                // A model slug is meaningful only within its provider. Do not
++                // attempt previous-model compaction through the new runtime.
++                state.set_previous_turn_settings(None);
 +            }
              state.session_configuration = updated;
              let new_config = notify_config_contributors
                  .then(|| self.build_effective_session_config(&state.session_configuration));
 diff --git a/codex-rs/core/src/session/review.rs b/codex-rs/core/src/session/review.rs
-index 0cff774179..bc59405b55 100644
+index 0cff77417915dc544c121d556dfccb0e820b3022..bc59405b5570aab54f5949e1030abe0b846c82d2 100644
 --- a/codex-rs/core/src/session/review.rs
 +++ b/codex-rs/core/src/session/review.rs
 @@ -15,16 +15,14 @@ pub(super) async fn spawn_review_thread(
@@ -1987,7 +2339,7 @@ index 0cff774179..bc59405b55 100644
          history_mode: parent_turn_context.history_mode,
          parent_thread_id: parent_turn_context.parent_thread_id,
 diff --git a/codex-rs/core/src/session/rollout_reconstruction.rs b/codex-rs/core/src/session/rollout_reconstruction.rs
-index 66e0cf27ce..df79b39572 100644
+index 66e0cf27cef972ba20225d8ca04cabb38378aa32..df79b395721963ccb426f8134fe5a68d84f45e6d 100644
 --- a/codex-rs/core/src/session/rollout_reconstruction.rs
 +++ b/codex-rs/core/src/session/rollout_reconstruction.rs
 @@ -323,6 +323,18 @@ impl Session {
@@ -2024,7 +2376,7 @@ index 66e0cf27ce..df79b39572 100644
                      if let Some(replacement_history) = &compacted.replacement_history {
                          // This should actually never happen, because the reverse loop above (to build rollout_suffix)
 diff --git a/codex-rs/core/src/session/rollout_reconstruction_tests.rs b/codex-rs/core/src/session/rollout_reconstruction_tests.rs
-index 4f8c6ceebd..11ba43527e 100644
+index 4f8c6ceebd17fe934bb27a32cd87c47ecb06912f..11ba43527e8ff6689cb183e2560beefcd996781f 100644
 --- a/codex-rs/core/src/session/rollout_reconstruction_tests.rs
 +++ b/codex-rs/core/src/session/rollout_reconstruction_tests.rs
 @@ -10,6 +10,7 @@ use codex_history::InitialHistory;
@@ -2154,7 +2506,7 @@ index 4f8c6ceebd..11ba43527e 100644
  async fn record_initial_history_ignores_security_risk_scores() {
      let (session, _turn_context) = make_session_and_context().await;
 diff --git a/codex-rs/core/src/session/session.rs b/codex-rs/core/src/session/session.rs
-index e0250aee6d..e722ccc0ee 100644
+index e0250aee6d24178115760251e60c9d50b183521f..e722ccc0ee04a02ee5840b35ae7294834b751b42 100644
 --- a/codex-rs/core/src/session/session.rs
 +++ b/codex-rs/core/src/session/session.rs
 @@ -10,6 +10,7 @@ use crate::config::ConstraintError;
@@ -2231,7 +2583,7 @@ index e0250aee6d..e722ccc0ee 100644
          if let Some(environments) = &updates.environments {
              next_configuration.legacy_fallback_cwd = environments.legacy_fallback_cwd.clone();
 diff --git a/codex-rs/core/src/session/step_activation.rs b/codex-rs/core/src/session/step_activation.rs
-index ffbe0ebd19..6317f98597 100644
+index ffbe0ebd19ccbe0fcf0a3a50d936260c8b351a2c..6317f9859703b245bfbf338cef55274226fd98a3 100644
 --- a/codex-rs/core/src/session/step_activation.rs
 +++ b/codex-rs/core/src/session/step_activation.rs
 @@ -11,6 +11,7 @@ use crate::config::ConstraintResult;
@@ -2286,7 +2638,7 @@ index ffbe0ebd19..6317f98597 100644
                  self.features.enabled(Feature::Personality),
                  self.features.enabled(Feature::FastMode),
 diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
-index 3889978a0a..1aa8e4aa78 100644
+index 3889978a0a16e2685007b550d239b2c0bda73fb4..25988ee7951d7e70a40c56d4c358e66d4daee6a5 100644
 --- a/codex-rs/core/src/session/tests.rs
 +++ b/codex-rs/core/src/session/tests.rs
 @@ -50,6 +50,7 @@ use codex_login::auth::AgentIdentityAuthPolicy;
@@ -2341,7 +2693,7 @@ index 3889978a0a..1aa8e4aa78 100644
          step_settings: Arc::new(StepSettings {
              collaboration_mode,
              reasoning_summary: config.model_reasoning_summary,
-@@ -5149,6 +5166,135 @@ pub(crate) async fn make_session_configuration_for_tests() -> SessionConfigurati
+@@ -5149,6 +5166,141 @@ pub(crate) async fn make_session_configuration_for_tests() -> SessionConfigurati
      }
  }
  
@@ -2454,6 +2806,11 @@ index 3889978a0a..1aa8e4aa78 100644
 +            [&user, &reasoning, &assistant],
 +            TruncationPolicy::Tokens(10_000),
 +        );
++        state.set_previous_turn_settings(Some(PreviousTurnSettings {
++            model: "gpt-5.6-sol".to_string(),
++            comp_hash: None,
++            realtime_active: Some(false),
++        }));
 +    }
 +
 +    let commit = session
@@ -2472,12 +2829,13 @@ index 3889978a0a..1aa8e4aa78 100644
 +        raw_history_items(&session.clone_history().await),
 +        vec![user, assistant]
 +    );
++    assert_eq!(session.previous_turn_settings().await, None);
 +}
 +
  #[tokio::test]
  async fn emit_subagent_session_started_includes_fork_lineage_and_originator() {
      use wiremock::Mock;
-@@ -5964,6 +6110,8 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
+@@ -5964,6 +6116,8 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
              config.model_provider.clone(),
              Some(Arc::clone(&auth_manager)),
          ),
@@ -2486,7 +2844,7 @@ index 3889978a0a..1aa8e4aa78 100644
          step_settings: Arc::new(StepSettings {
              collaboration_mode,
              reasoning_summary: config.model_reasoning_summary,
-@@ -6117,6 +6265,8 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
+@@ -6117,6 +6271,8 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
              config.model_provider.clone(),
              Some(Arc::clone(&auth_manager)),
          ),
@@ -2495,7 +2853,7 @@ index 3889978a0a..1aa8e4aa78 100644
          step_settings: Arc::new(StepSettings {
              collaboration_mode,
              reasoning_summary: config.model_reasoning_summary,
-@@ -6415,6 +6565,8 @@ async fn make_session_with_config_and_rx(
+@@ -6415,6 +6571,8 @@ async fn make_session_with_config_and_rx(
              config.model_provider.clone(),
              Some(Arc::clone(&auth_manager)),
          ),
@@ -2504,7 +2862,7 @@ index 3889978a0a..1aa8e4aa78 100644
          step_settings: Arc::new(StepSettings {
              collaboration_mode,
              reasoning_summary: config.model_reasoning_summary,
-@@ -6541,6 +6693,8 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
+@@ -6541,6 +6699,8 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
              config.model_provider.clone(),
              Some(Arc::clone(&auth_manager)),
          ),
@@ -2513,7 +2871,7 @@ index 3889978a0a..1aa8e4aa78 100644
          step_settings: Arc::new(StepSettings {
              collaboration_mode,
              reasoning_summary: config.model_reasoning_summary,
-@@ -8396,6 +8550,8 @@ where
+@@ -8396,6 +8556,8 @@ where
              config.model_provider.clone(),
              Some(Arc::clone(&auth_manager)),
          ),
@@ -2523,7 +2881,7 @@ index 3889978a0a..1aa8e4aa78 100644
              collaboration_mode,
              reasoning_summary: config.model_reasoning_summary,
 diff --git a/codex-rs/core/src/session/tests/guardian_tests.rs b/codex-rs/core/src/session/tests/guardian_tests.rs
-index c2a04bf531..d48a99cd00 100644
+index c2a04bf53182c53caf404925fb43378703ca9388..d48a99cd00e8fc4f88ae02cab22bfc3180fc30d4 100644
 --- a/codex-rs/core/src/session/tests/guardian_tests.rs
 +++ b/codex-rs/core/src/session/tests/guardian_tests.rs
 @@ -1267,6 +1267,7 @@ async fn guardian_subagent_does_not_inherit_parent_exec_policy_rules() {
@@ -2543,7 +2901,7 @@ index c2a04bf531..d48a99cd00 100644
          skills_service,
          plugins_manager,
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 9b88c0f5a8..8872399006 100644
+index 9b88c0f5a84d9060a6fba2bedcfabc168b1e923e..8872399006a9afebb7202cd6dbabb162d662d7ce 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
 @@ -162,8 +162,15 @@ pub(crate) async fn run_turn(
@@ -2583,7 +2941,7 @@ index 9b88c0f5a8..8872399006 100644
                      .refresh_if_new_etag(etag, turn_context.config.http_client_factory())
                      .await;
 diff --git a/codex-rs/core/src/session/turn_context.rs b/codex-rs/core/src/session/turn_context.rs
-index 04d04a7bcb..950caa6836 100644
+index 04d04a7bcb01decf4325ee0036c3b609bf680e66..950caa6836e59b61cabc99f4cba3a58eb51c8bc8 100644
 --- a/codex-rs/core/src/session/turn_context.rs
 +++ b/codex-rs/core/src/session/turn_context.rs
 @@ -196,6 +196,7 @@ pub struct TurnContext {
@@ -2629,7 +2987,7 @@ index 04d04a7bcb..950caa6836 100644
                  .network_proxy
                  .load_full()
 diff --git a/codex-rs/core/src/session_startup_prewarm.rs b/codex-rs/core/src/session_startup_prewarm.rs
-index 4b61d92b83..228d17d2c8 100644
+index 4b61d92b83ba5684d922e7902686ac68d1b4df00..228d17d2c806d2352a5b0023592ef7e0f9c1386b 100644
 --- a/codex-rs/core/src/session_startup_prewarm.rs
 +++ b/codex-rs/core/src/session_startup_prewarm.rs
 @@ -316,7 +316,10 @@ async fn schedule_startup_prewarm_inner(
@@ -2645,7 +3003,7 @@ index 4b61d92b83..228d17d2c8 100644
      client_session
          .prewarm_websocket(
 diff --git a/codex-rs/core/src/tasks/review.rs b/codex-rs/core/src/tasks/review.rs
-index 42ec842e70..1e5149ec39 100644
+index 42ec842e70d38f1930d5d671a2ac048d4b45c2d8..1e5149ec39c9efd771417fa215e4931d634d0cc2 100644
 --- a/codex-rs/core/src/tasks/review.rs
 +++ b/codex-rs/core/src/tasks/review.rs
 @@ -128,7 +128,7 @@ async fn start_review_conversation(
@@ -2658,7 +3016,7 @@ index 42ec842e70..1e5149ec39 100644
          Arc::clone(&session),
          ctx.clone(),
 diff --git a/codex-rs/core/src/thread_manager.rs b/codex-rs/core/src/thread_manager.rs
-index 333e59d2d0..9d608dec5b 100644
+index 333e59d2d0b0a32f3346e6d00ae9a7e4bb5b39cf..9d608dec5b1ad7f763634ea50776de9db0fdbea2 100644
 --- a/codex-rs/core/src/thread_manager.rs
 +++ b/codex-rs/core/src/thread_manager.rs
 @@ -345,6 +345,7 @@ pub(crate) struct ThreadManagerState {
@@ -2711,7 +3069,7 @@ index 333e59d2d0..9d608dec5b 100644
              skills_service: Arc::clone(&self.skills_service),
              plugins_manager: Arc::clone(&self.plugins_manager),
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents/spawn.rs b/codex-rs/core/src/tools/handlers/multi_agents/spawn.rs
-index 0a5325c195..64d7440ccc 100644
+index 0a5325c195a8beece76391649579b642eaaddb80..64d7440cccb5947ba361403e4cb2d33562cd6300 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents/spawn.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents/spawn.rs
 @@ -103,10 +103,11 @@ async fn handle_spawn_agent(
@@ -2728,7 +3086,7 @@ index 0a5325c195..64d7440ccc 100644
          turn.config.service_tier.as_deref(),
          args.service_tier.as_deref(),
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_common.rs b/codex-rs/core/src/tools/handlers/multi_agents_common.rs
-index 9fdfd48962..e2ad9b1289 100644
+index 9fdfd489627a71d9468786f0fd59579a48da1b4a..e2ad9b1289bc9da281b3920f8611272c8a677532 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_common.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_common.rs
 @@ -8,6 +8,7 @@ use crate::session::turn_context::TurnContext;
@@ -2843,7 +3201,7 @@ index 9fdfd48962..e2ad9b1289 100644
      model: &str,
      supported_reasoning_levels: &[ReasoningEffortPreset],
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs b/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs
-index 61a6240f9a..ba66bacee1 100644
+index 61a6240f9a5df98eac3d8ea73c7c8e83705a521b..ba66bacee121f1b03db63c8691dcbdbbd73bf3f8 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs
 @@ -134,7 +134,7 @@ async fn handle_spawn_agent(
@@ -2875,7 +3233,7 @@ index 61a6240f9a..ba66bacee1 100644
                          .await,
                  ),
 diff --git a/codex-rs/model-provider-info/src/lib.rs b/codex-rs/model-provider-info/src/lib.rs
-index 65e2e4cbf7..b3486ff4b7 100644
+index 65e2e4cbf75a53d62d4a681cdbd9ac32d47403a6..b3486ff4b7b482a83a9f24b5fbd0a37e3f8f7089 100644
 --- a/codex-rs/model-provider-info/src/lib.rs
 +++ b/codex-rs/model-provider-info/src/lib.rs
 @@ -37,6 +37,8 @@ const MAX_REQUEST_MAX_RETRIES: u64 = 100;
@@ -2990,7 +3348,7 @@ index 65e2e4cbf7..b3486ff4b7 100644
  #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, JsonSchema)]
  #[serde(rename_all = "lowercase")]
 diff --git a/codex-rs/model-provider-info/src/model_provider_info_tests.rs b/codex-rs/model-provider-info/src/model_provider_info_tests.rs
-index d08af0ffb5..a6d915de72 100644
+index d08af0ffb54c266d81465cd056944e2085889b97..a6d915de72836f1c90f53b2694b4ab6c4cdec44b 100644
 --- a/codex-rs/model-provider-info/src/model_provider_info_tests.rs
 +++ b/codex-rs/model-provider-info/src/model_provider_info_tests.rs
 @@ -5,6 +5,53 @@ use pretty_assertions::assert_eq;

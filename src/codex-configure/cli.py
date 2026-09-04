@@ -9,11 +9,13 @@ import shlex
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence, TextIO
 
 from .catalog import CatalogService, ModelChoice, is_default_model_slug
 from .errors import UserFacingError
+from .init_tui import InitOutcome, run_fullscreen_init, terminal_available
 from .launch_context import (
     CORE_PROJECT_ROOT_MARKER,
     LaunchContext,
@@ -32,8 +34,16 @@ from .launch_context import (
 from .providers import ProviderDescriptor, validate_shortname
 from .runtime import ConfigManager
 
+try:
+    import curses
+except ImportError:  # pragma: no cover - standard on supported POSIX hosts
+    _CURSES_FAILURES: tuple[type[BaseException], ...] = (OSError, RuntimeError)
+else:
+    _CURSES_FAILURES = (OSError, RuntimeError, curses.error)
+
 
 TOOLKIT_URL = "https://toolkit.umgpt.umich.edu/"
+INIT_CANCELLED = 3
 
 
 class Console:
@@ -192,11 +202,26 @@ class Console:
         return curses.wrapper(loop)
 
 
+def _fullscreen_console(console: Console) -> bool:
+    return bool(
+        console.input_stream is sys.stdin
+        and console.output_stream is sys.stdout
+        and terminal_available(console.input_stream, console.output_stream)
+    )
+
+
+@dataclass(frozen=True)
+class _ClientProcess:
+    name: str
+    pid: str | None
+
+
 class Launcher:
     """Resolve and launch stock Codex CLI/Desktop clients."""
 
-    def __init__(self, environ: Mapping[str, str] | None = None) -> None:
+    def __init__(self, environ: Mapping[str, str] | None = None, proc_root: Path = Path("/proc")) -> None:
         self.environ = dict(environ or os.environ)
+        self.proc_root = proc_root
 
     def validate(self, target: str, requires_environment: bool = False) -> list[str]:
         if target == "cli":
@@ -242,7 +267,7 @@ class Launcher:
             "Could not find Codex Desktop; set CODEX_DESKTOP_COMMAND to its launch command."
         )
 
-    def running_clients(self) -> list[str]:
+    def _running_client_processes(self) -> list[_ClientProcess]:
         pgrep = shutil.which("pgrep", path=self.environ.get("PATH"))
         if not pgrep:
             raise UserFacingError("Could not verify clients are stopped because pgrep is unavailable.")
@@ -254,18 +279,21 @@ class Launcher:
             if sys.platform == "darwin"
             else ("ChatGPT", "chatgpt", "codex-desktop", "codex-app", "codex", "codex-cli")
         )
-        running: list[str] = []
+        running: list[_ClientProcess] = []
         for name in names:
             result = subprocess.run(
                 [pgrep, "-x", name], check=False, capture_output=True, text=True, env=self.environ
             )
             if result.returncode == 0:
-                pids = [value for value in result.stdout.split() if value.isdigit()]
+                values = result.stdout.split()
+                pids = [value for value in values if value.isdigit()]
                 # Electron can leave reparented zombie entries behind. They
                 # have no runnable client and must not permanently block a
                 # profile switch. Anything other than a confirmed zombie is
                 # treated conservatively as a live client.
-                live = not pids
+                if not pids or len(pids) != len(values):
+                    running.append(_ClientProcess(name=name, pid=None))
+                    continue
                 for pid in pids:
                     state = subprocess.run(
                         [ps, "-o", "stat=", "-p", pid],
@@ -284,20 +312,141 @@ class Launcher:
                         not process_state.upper().startswith("Z")
                         for process_state in process_states
                     ):
-                        live = True
-                        break
-                if live:
-                    running.append(name)
+                        running.append(_ClientProcess(name=name, pid=pid))
             elif result.returncode != 1:
                 detail = result.stderr.strip() or f"exit status {result.returncode}"
                 raise UserFacingError(f"Could not inspect running clients with pgrep: {detail}")
         return running
 
-    def ensure_clients_stopped(self) -> None:
-        running = self.running_clients()
-        if running:
+    def running_clients(self) -> list[str]:
+        """Return live client names for broad lifecycle diagnostics."""
+
+        return list(dict.fromkeys(process.name for process in self._running_client_processes()))
+
+    @staticmethod
+    def _resolved_environment_path(
+        environment: Mapping[str, str], key: str
+    ) -> tuple[Path | None, str | None]:
+        value = environment.get(key)
+        if not value:
+            return None, None
+        candidate = Path(value)
+        if not candidate.is_absolute():
+            return None, f"{key} is not an absolute path"
+        try:
+            return candidate.resolve(), None
+        except OSError as exc:
+            return None, f"could not resolve {key}: {exc}"
+
+    def _linux_conflict_boundary(
+        self,
+        process: _ClientProcess,
+        target_codex_home: Path,
+        target_root: Path | None,
+    ) -> str | None:
+        """Return a conflicting boundary, or None when this client is isolated."""
+
+        if process.pid is None:
+            return "its process identifier could not be read"
+        try:
+            raw_environment = (self.proc_root / process.pid / "environ").read_bytes()
+        except FileNotFoundError:
+            return None  # The process exited after its liveness check.
+        except OSError as exc:
+            detail = exc.strerror or str(exc)
+            return f"its environment could not be read safely ({detail})"
+
+        environment: dict[str, str] = {}
+        relevant_keys = {
+            "CODEX_HOME",
+            "CODEX_CONFIGURE_ROOT",
+            "CODEX_ISOLATED_ROOT",
+            "CODEX_CONFIGURE_STATE_ROOT",
+            "CODEX_ISOLATED_STATE_ROOT",
+        }
+        for item in raw_environment.split(b"\0"):
+            if not item or b"=" not in item:
+                continue
+            raw_key, raw_value = item.split(b"=", 1)
+            try:
+                key = raw_key.decode("ascii")
+            except UnicodeDecodeError:
+                continue
+            if key not in relevant_keys:
+                continue
+            try:
+                value = raw_value.decode("utf-8")
+            except UnicodeDecodeError:
+                return f"{key} could not be decoded safely"
+            previous = environment.get(key)
+            if previous is not None and previous != value:
+                return f"{key} has conflicting values"
+            environment[key] = value
+
+        paths: dict[str, Path] = {}
+        for key in relevant_keys:
+            resolved, problem = self._resolved_environment_path(environment, key)
+            if problem is not None:
+                return problem
+            if resolved is not None:
+                paths[key] = resolved
+
+        if paths.get("CODEX_HOME") == target_codex_home:
+            return f"CODEX_HOME {target_codex_home}"
+        if target_root is None:
+            return None
+        if any(
+            paths.get(key) == target_root
+            for key in ("CODEX_CONFIGURE_ROOT", "CODEX_ISOLATED_ROOT")
+        ):
+            return f"launch root {target_root}"
+        target_state = target_root / ".codex-configure"
+        if any(
+            paths.get(key) == target_state
+            for key in ("CODEX_CONFIGURE_STATE_ROOT", "CODEX_ISOLATED_STATE_ROOT")
+        ):
+            return f"launch state {target_state}"
+        # No codex-configure variables means the normal/global profile. Any
+        # different recognized home or root has its own mutable state.
+        return None
+
+    def ensure_clients_stopped(
+        self,
+        target_codex_home: Path | None = None,
+        *,
+        target_root: Path | None = None,
+    ) -> None:
+        running = self._running_client_processes()
+        if (
+            running
+            and sys.platform == "linux"
+            and target_codex_home is not None
+        ):
+            target_codex_home = target_codex_home.expanduser().resolve()
+            target_root = target_root.expanduser().resolve() if target_root is not None else None
+            conflicts = [
+                (process, boundary)
+                for process in running
+                if (boundary := self._linux_conflict_boundary(process, target_codex_home, target_root))
+                is not None
+            ]
+            if not conflicts:
+                return
+            detail = "; ".join(
+                f"{process.name}"
+                f"{f' (pid {process.pid})' if process.pid is not None else ''}: {boundary}"
+                for process, boundary in conflicts
+            )
             raise UserFacingError(
-                f"Codex or ChatGPT is running ({', '.join(running)}). Close it before switching environments."
+                f"Cannot switch the target CODEX_HOME {target_codex_home}: a running Codex or "
+                f"ChatGPT client conflicts with that state boundary ({detail}). Close it before "
+                "switching environments."
+            )
+
+        names = list(dict.fromkeys(process.name for process in running))
+        if names:
+            raise UserFacingError(
+                f"Codex or ChatGPT is running ({', '.join(names)}). Close it before switching environments."
             )
 
     def launch(
@@ -376,10 +525,7 @@ def _select_models(
             for index, model in enumerate(models, start=1)
             if index in supported and is_default_model_slug(model.slug)
         ]
-    labels = [
-        f"{model.display_name} ({model.slug})" if model.display_name != model.slug else model.slug
-        for model in models
-    ]
+    labels = [_model_label(model) for model in models]
     indexes = console.checkbox(
         "Choose models to make available in Codex",
         labels,
@@ -397,10 +543,22 @@ def _choose_default(console: Console, selected: Sequence[ModelChoice], prior: st
         default = next((index for index, model in enumerate(selected, start=1) if is_default_model_slug(model.slug)), 1)
     choice = console.choose(
         "Choose the default model",
-        [f"{model.display_name} ({model.slug})" if model.display_name != model.slug else model.slug for model in selected],
+        [_model_label(model) for model in selected],
         default=default,
     )
     return selected[choice - 1].slug
+
+
+def _model_label(model: ModelChoice) -> str:
+    label = (
+        f"{model.display_name} ({model.slug})"
+        if model.display_name != model.slug
+        else model.slug
+    )
+    if model.status in {"tested", "known", "unverified"}:
+        details = "; ".join((model.status, *model.badges))
+        return f"{label} [{details}]"
+    return label
 
 
 def _profile_metadata(manager: ConfigManager, descriptor: ProviderDescriptor) -> tuple[tuple[str, ...], str | None]:
@@ -423,6 +581,14 @@ def _profile_metadata(manager: ConfigManager, descriptor: ProviderDescriptor) ->
 
 def _profiles(manager: ConfigManager) -> tuple[ProviderDescriptor, ...]:
     return tuple(manager.list_providers(include_stock=False))
+
+
+def _provider_kind_label(descriptor: ProviderDescriptor) -> str:
+    if descriptor.kind == "umich-toolkit":
+        return "U-M GPT Toolkit"
+    if descriptor.kind == "local-responses":
+        return "local Responses endpoint"
+    return descriptor.display_name
 
 
 def _credential_values(
@@ -505,9 +671,11 @@ def _write_provider_status(manager: ConfigManager, console: Console) -> None:
         for descriptor in descriptors:
             selected, _ = _profile_metadata(manager, descriptor)
             noun = "model" if len(selected) == 1 else "models"
-            console.write(f"  - {descriptor.id} (U-M GPT Toolkit; {len(selected)} {noun})")
+            console.write(
+                f"  - {descriptor.id} ({_provider_kind_label(descriptor)}; {len(selected)} {noun})"
+            )
     else:
-        console.write("  - U-M GPT Toolkit: none")
+        console.write("  - external providers: none")
     console.write()
 
 
@@ -560,6 +728,60 @@ def _configure_umich_provider(
     console.write()
 
 
+def _configure_local_provider(
+    manager: ConfigManager,
+    console: Console,
+    environ: Mapping[str, str],
+    catalog_service: CatalogService | None,
+    descriptor: ProviderDescriptor | None,
+) -> None:
+    descriptors = _profiles(manager)
+    if descriptor is None:
+        shortname = validate_shortname(console.ask("One-word profile name: ").strip())
+        if shortname in {item.id for item in descriptors}:
+            raise UserFacingError(f"A profile named `{shortname}` already exists.")
+        default_base_url = "http://127.0.0.1:1337/v1"
+        prior_ids, prior_default = (), None
+        existing_key = ""
+    else:
+        shortname = descriptor.id
+        default_base_url = descriptor.base_url
+        prior_ids, prior_default = _profile_metadata(manager, descriptor)
+        existing_key = (
+            manager.load_credentials(environ).get(descriptor.env_key, "")
+            if descriptor.env_key
+            else ""
+        )
+
+    base_url = console.ask(f"Responses API base URL [{default_base_url}]: ") or default_base_url
+    entered_key = console.ask_secret(
+        "Bearer API key (optional; press Enter to reuse the stored key or use no key): "
+    )
+    api_key = entered_key or existing_key or None
+    service = catalog_service or CatalogService(manager.paths.codex_home)
+    result = service.discover_local(base_url, api_key=api_key)
+    if result.warning:
+        console.write(f"Warning: {result.warning}")
+        console.write()
+    models = tuple(result.models)
+    selected = _select_models(console, models, prior_ids)
+    default_model = _choose_default(console, selected, prior_default)
+    catalog = service.build_local_catalog(selected)
+    manager.save_local_provider(
+        shortname,
+        base_url,
+        api_key,
+        catalog,
+        selected_models=[model.slug for model in selected],
+        default_model=default_model,
+        catalog_source=getattr(result, "source", f"{base_url.rstrip('/')}/models"),
+        known_catalog=getattr(result, "known_catalog", None),
+    )
+    console.write()
+    console.write(f"Profile `{shortname}` is ready with {len(selected)} local model(s).")
+    console.write()
+
+
 def run_init(
     codex_home: Path,
     console: Console,
@@ -570,6 +792,46 @@ def run_init(
 ) -> int:
     manager = manager or ConfigManager(codex_home)
     manager.initialize()
+    if _fullscreen_console(console):
+        detected_auth_home = (
+            _detected_openai_auth_home(auth_source_home, manager.paths.codex_home, environ)
+            if auth_source_home is not None
+            else None
+        )
+        try:
+            tui_result = run_fullscreen_init(
+                manager,
+                environ,
+                catalog_service,
+                auth_source_home=detected_auth_home,
+            )
+        except _CURSES_FAILURES:
+            # Preserve the accessible text flow on terminals where curses is
+            # unavailable or cannot take control of the current display.
+            console.write("Full-screen init is unavailable here; using the text interface.")
+        else:
+            if tui_result.outcome == InitOutcome.CANCELLED:
+                console.write("Cancelled. Proposed profile changes were discarded.")
+                return INIT_CANCELLED
+            console.write("Saved proposed profile changes.")
+            return 0
+    return _run_init_text(
+        manager,
+        console,
+        environ,
+        catalog_service=catalog_service,
+        auth_source_home=auth_source_home,
+    )
+
+
+def _run_init_text(
+    manager: ConfigManager,
+    console: Console,
+    environ: Mapping[str, str],
+    *,
+    catalog_service: CatalogService | None,
+    auth_source_home: Path | None,
+) -> int:
     detected_auth_home = (
         _detected_openai_auth_home(auth_source_home, manager.paths.codex_home, environ)
         if auth_source_home is not None
@@ -594,12 +856,13 @@ def run_init(
         actions.extend(
             (
                 "reconfigure",
-                f"Reconfigure U-M GPT Toolkit profile `{descriptor.id}`",
+                f"Reconfigure {_provider_kind_label(descriptor)} profile `{descriptor.id}`",
                 descriptor,
             )
             for descriptor in descriptors
         )
-        actions.append(("new", "New U-M GPT Toolkit Service", None))
+        actions.append(("new-umich", "New U-M GPT Toolkit Service", None))
+        actions.append(("new-local", "New local Responses endpoint", None))
         actions.append(("done", "Done configuring providers", None))
         chosen = console.choose(
             "Choose a model provider profile to initialize:",
@@ -621,13 +884,24 @@ def run_init(
             console.write(f"Copied only OpenAI authentication to {destination}.")
             console.write()
             continue
-        _configure_umich_provider(
-            manager,
-            console,
-            environ,
-            catalog_service,
-            descriptor if action == "reconfigure" else None,
-        )
+        if action == "new-local" or (
+            action == "reconfigure" and descriptor is not None and descriptor.kind == "local-responses"
+        ):
+            _configure_local_provider(
+                manager,
+                console,
+                environ,
+                catalog_service,
+                descriptor if action == "reconfigure" else None,
+            )
+        else:
+            _configure_umich_provider(
+                manager,
+                console,
+                environ,
+                catalog_service,
+                descriptor if action == "reconfigure" else None,
+            )
 
 
 def _run_target(target: str) -> tuple[str | None, str]:
@@ -714,18 +988,15 @@ def run_run(
     launcher: Launcher | None = None,
     app_args: Sequence[str] = (),
     core_home: Path | None = None,
+    launch_root: Path | None = None,
 ) -> int:
     manager = manager or ConfigManager(codex_home)
     manager.require_initialized()
     launcher = launcher or Launcher(environ)
     provider, app = _run_target(target)
     if provider is not None:
-        command = [*launcher.validate(app, requires_environment=provider != "openai"), *app_args]
-        launcher.ensure_clients_stopped()
-        if provider == "openai":
-            active_profile = manager.activate_openai()
-            credentials: dict[str, str] = {}
-        else:
+        descriptor: ProviderDescriptor | None = None
+        if provider != "openai":
             try:
                 descriptor = manager.get_provider(provider)
             except UserFacingError as exc:
@@ -733,8 +1004,24 @@ def run_run(
                 raise UserFacingError(
                     f"Unknown model provider `{provider}`. Available providers: {available}."
                 ) from exc
+        command = [
+            *launcher.validate(
+                app,
+                requires_environment=bool(descriptor and descriptor.env_key),
+            ),
+            *app_args,
+        ]
+        launcher.ensure_clients_stopped(
+            manager.paths.codex_home,
+            target_root=launch_root,
+        )
+        if provider == "openai":
+            active_profile = manager.activate_openai()
+            credentials: dict[str, str] = {}
+        else:
+            assert descriptor is not None
             credentials = _credential_values(manager, environ, provider)
-            if not credentials:
+            if descriptor.env_key and not credentials:
                 raise UserFacingError(
                     f"No credential found for `{provider}` ({descriptor.env_key}). Initialize it with `codex-configure init`."
                 )
@@ -826,29 +1113,76 @@ def run_doctor(
     environ: Mapping[str, str],
     manager: ConfigManager | None = None,
     launcher: Launcher | None = None,
+    *,
+    launch_root: Path | None = None,
+    launch_status: str | None = None,
 ) -> int:
     manager = manager or ConfigManager(codex_home)
     launcher = launcher or Launcher(environ)
     report = manager.doctor()
+    if launch_root is not None and launch_status is not None:
+        console.write("Launch root (exact current directory)")
+        console.write(f"  Directory: {launch_root}")
+        console.write(f"  Status: {launch_status}")
+        console.write()
     console.write(f"Codex home: {manager.paths.codex_home}")
     console.write(f"Profiles directory: {manager.paths.profiles}")
     console.write()
     labels = {"ok": "OK", "warning": "WARN", "error": "ERROR"}
     for check in report.checks:
         console.write(f"[{labels[check.status]}] {check.name}: {check.detail}")
+    console.write()
+    console.write(
+        "Managed configuration: healthy"
+        if report.healthy
+        else "Managed configuration: attention required"
+    )
     try:
         running = launcher.running_clients()
     except UserFacingError as exc:
-        console.write(f"[ERROR] Client lifecycle: {exc}")
-        clients_healthy = False
+        client_state = "unknown"
+        console.write(f"[WARN] Client lifecycle: could not determine whether clients are running: {exc}")
     else:
-        clients_healthy = not running
-        detail = ", ".join(running) if running else "no Codex or ChatGPT clients detected"
-        console.write(f"[{'OK' if clients_healthy else 'ERROR'}] Client lifecycle: {detail}")
-    healthy = report.healthy and clients_healthy
+        client_state = "running" if running else "stopped"
+        if running:
+            labels_by_name = {
+                "chatgpt": "ChatGPT Desktop",
+                "codex-desktop": "Codex Desktop",
+                "codex-app": "Codex Desktop",
+                "codex": "Codex CLI",
+                "codex-cli": "Codex CLI",
+            }
+            detected = ", ".join(
+                labels_by_name.get(name.casefold(), name) for name in running
+            )
+            console.write(f"[ADVISORY] Client lifecycle: detected {detected}.")
+            console.write(
+                "             Profile switching and restore are blocked while clients run because "
+                "they rewrite the active configuration."
+            )
+            console.write(
+                "             Dynamic Picker launches do not have this blanket requirement, but an "
+                "already-running Desktop retains the environment with which it started."
+            )
+            console.write(
+                f"             Action: fully quit {detected}, then rerun `codex-configure doctor`."
+            )
+        else:
+            console.write("[OK] Client lifecycle: no Codex or ChatGPT clients detected")
+
     console.write()
-    console.write("Result: healthy" if healthy else "Result: attention required")
-    return 0 if healthy else 1
+    if report.healthy and client_state == "stopped":
+        console.write("Result: healthy")
+        return 0
+    if report.healthy and client_state == "running":
+        console.write("Result: managed configuration healthy; client action required")
+    elif report.healthy:
+        console.write("Result: managed configuration healthy; client lifecycle could not be verified")
+    elif client_state == "running":
+        console.write("Result: managed configuration attention required; client action required")
+    else:
+        console.write("Result: attention required")
+    return 1
 
 
 def run_restore(
@@ -884,7 +1218,7 @@ def _choose_launch_settings(manager: ConfigManager, console: Console) -> LaunchS
         "Choose the fixed provider for Stock Core:",
         (
             "OpenAI (stock)",
-            *(f"{provider.id} (U-M GPT Toolkit)" for provider in providers),
+            *(f"{provider.id} ({_provider_kind_label(provider)})" for provider in providers),
         ),
     )
     provider = "openai" if provider_choice == 1 else providers[provider_choice - 2].id
@@ -908,6 +1242,8 @@ def run_init_command(
             environ,
             auth_source_home=normal_codex_home,
         )
+        if result == INIT_CANCELLED:
+            return 0
         if result == 0:
             console.write(
                 "Explicit Codex home configured; no project launcher or Core was changed."
@@ -917,41 +1253,74 @@ def run_init_command(
     cwd = cwd.resolve()
     state_dir = local_state(cwd)
 
+    fullscreen = _fullscreen_console(console)
     if (state_dir / "root.toml").exists():
-        root_context = initialize_root(cwd)
+        root_context = (
+            load_launch_context(state_dir)
+            if (state_dir / "launch.toml").exists()
+            else initialize_root(cwd)
+        )
     elif state_dir.exists():
         raise UserFacingError(
             f"{state_dir} exists but is not a codex-configure launch root (root.toml is missing)."
         )
     else:
-        selected = console.choose(
-            "What would you like to configure?",
-            (
-                f"Create a launch root in {cwd}",
-                "Cancel",
-            ),
-        )
-        if selected == 2:
-            console.write("Cancelled.")
-            return 0
         if cwd == user_home.resolve():
             raise UserFacingError(
                 "Your home directory cannot be a launch root. Create or enter a project "
                 "directory and run `codex-configure init` there."
             )
+        if not fullscreen:
+            selected = console.choose(
+                "What would you like to configure?",
+                (
+                    f"Create a launch root in {cwd}",
+                    "Cancel",
+                ),
+            )
+            if selected == 2:
+                console.write("Cancelled.")
+                return 0
         root_context = initialize_root(cwd)
 
-    result = run_init(
-        root_context.codex_home,
-        console,
-        environ,
-        auth_source_home=normal_codex_home,
-    )
-    if result != 0:
-        return result
     manager = ConfigManager(root_context.codex_home)
+    manager.initialize()
+    if fullscreen:
+        detected_auth_home = _detected_openai_auth_home(
+            normal_codex_home,
+            root_context.codex_home,
+            environ,
+        )
+        try:
+            tui_result = run_fullscreen_init(
+                manager,
+                environ,
+                launch_settings=root_context.settings,
+                auth_source_home=detected_auth_home,
+            )
+        except _CURSES_FAILURES:
+            console.write("Full-screen init is unavailable here; using the text interface.")
+            fullscreen = False
+        else:
+            if tui_result.outcome == InitOutcome.CANCELLED:
+                console.write("Cancelled. Proposed profile and launch-default changes were discarded.")
+                return 0
+            settings = tui_result.settings
+            assert settings is not None
+    if not fullscreen:
+        result = _run_init_text(
+            manager,
+            console,
+            environ,
+            catalog_service=None,
+            auth_source_home=normal_codex_home,
+        )
+        if result == INIT_CANCELLED:
+            return 0
+        if result != 0:
+            return result
+        settings = _choose_launch_settings(manager, console)
     manager.ensure_project_root_marker(CORE_PROJECT_ROOT_MARKER)
-    settings = _choose_launch_settings(manager, console)
     if settings.core == "dynamic":
         run_setup_dynamic(
             console,
@@ -1119,7 +1488,7 @@ def run_launch_context(
                     child_environment,
                     context.settings.provider,
                 )
-                if not credentials:
+                if descriptor.env_key and not credentials:
                     raise UserFacingError(
                         f"No credential found for `{context.settings.provider}` "
                         f"({descriptor.env_key}). Initialize it with `codex-configure init`."
@@ -1164,6 +1533,7 @@ def run_launch_context(
         child_environment,
         app_args=app_args,
         core_home=context.root,
+        launch_root=context.root,
     )
 
 
@@ -1180,6 +1550,23 @@ def _require_local_context(cwd: Path) -> LaunchContext:
     if context.root is None:  # pragma: no cover - guarded by root.toml
         raise UserFacingError(f"{state_dir} is not a directory launch root.")
     return context
+
+
+def _doctor_target(cwd: Path) -> tuple[Path, Path, str]:
+    """Return the exact-CWD target for a read-only doctor report."""
+
+    root = cwd.resolve()
+    state_dir = local_state(root)
+    fallback_home = state_dir / "codex-home"
+    if not state_dir.exists():
+        return root, fallback_home, "not configured"
+    if not (state_dir / "root.toml").exists():
+        return root, fallback_home, f"not recognized (missing {state_dir / 'root.toml'})"
+    try:
+        context = load_launch_context(state_dir)
+    except UserFacingError as exc:
+        return root, fallback_home, f"invalid ({exc})"
+    return root, context.codex_home, "recognized"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1287,6 +1674,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 console,
                 child_environment,
                 core_home=context.root,
+                launch_root=context.root,
             )
         if args.command == "setup":
             if explicit_codex_home is not None:
@@ -1307,11 +1695,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "doctor":
             if explicit_codex_home is not None:
                 return run_doctor(explicit_codex_home, console, environ)
-            context = _require_local_context(Path.cwd())
+            launch_root, codex_home, launch_status = _doctor_target(Path.cwd())
             return run_doctor(
-                context.codex_home,
+                codex_home,
                 console,
-                rooted_environment(context, environ),
+                environ,
+                launch_root=launch_root,
+                launch_status=launch_status,
             )
         if args.command == "restore":
             original = bool(getattr(args, "original", False))

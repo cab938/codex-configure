@@ -1,11 +1,11 @@
 # codex-configure
 
-`codex-configure` creates a self-contained Codex launch root in the exact current directory. Each root can use OpenAI and one or more named U-M GPT Toolkit services. Each U-M service has its own API key, billing allocation, selected model catalog, and one-line name such as `teaching` or `research`.
+`codex-configure` creates a self-contained Codex launch root in the exact current directory. Each root can use OpenAI, named U-M GPT Toolkit services, and local OpenAI-compatible Responses endpoints. Each external service has its own selected model catalog, optional credential, and one-line name such as `teaching`, `research`, or `local`.
 
 There are two ways to use it:
 
 - **Stock Core (fixed provider)** works with the stock Codex CLI and stock desktop app on macOS and Linux. The root launches one chosen provider until you reconfigure it.
-- **Dynamic Picker** uses a patched Codex Core on Linux or an Apple Silicon Mac. OpenAI and every configured U-M profile appear together in the desktop and CLI model picker.
+- **Dynamic Picker** uses a patched Codex Core on Linux or an Apple Silicon Mac. OpenAI and every configured U-M or local profile appear together in the desktop and CLI model picker.
 
 Both modes preserve the OpenAI sign-in, tasks, settings, skills, and plugins belonging to the launch root's `CODEX_HOME`. During setup, a root may start unsigned-in or copy only the existing OpenAI `auth.json` from `~/.codex`. It never imports tasks, settings, skills, plugins, sessions, or U-M credentials from that home.
 
@@ -70,26 +70,36 @@ From an initialized launch root, `launch` uses the exact current directory's `.c
 
 ## Initialize
 
-Run the setup wizard:
+Run the state-driven terminal manager:
 
 ```bash
 codex-configure init
 ```
 
-If the exact current directory is not already a launch root, setup first asks whether to:
+In a normal terminal, `init` opens one full-screen, keyboard-navigable view of
+the root's persisted state and any proposed changes. A new root starts with no
+external profiles; an existing root loads its profiles and current launch
+default. Use:
 
-1. create a launch root in the current directory;
-2. cancel without making changes.
+- `a` to add a U-M GPT Toolkit or local Responses profile;
+- `Enter` to inspect the selected profile and its models;
+- `d` to stage removal of the selected profile;
+- `l` to choose Dynamic Picker or a fixed stock-Core provider as the launch default;
+- `o` to stage an auth-only copy from a detected normal `~/.codex` home;
+- `s` to review and save the proposed state; or
+- `q` to discard the proposed changes.
 
-It then displays every provider already configured in that root and repeatedly offers:
+Profile, launch-default, credential, and removal changes remain in memory until
+Save is confirmed. Removal is limited to the selected profile's canonical
+tool-owned descriptor, catalog, metadata, and stored credential; a profile that
+is still the proposed stock-Core default cannot be removed until another launch
+default is selected. The auth-copy action creates only the new root's
+`auth.json`, refuses to overwrite one already there, and protects it with mode
+`0600`. OpenAI-only setup is valid.
 
-- **OpenAI (stock)**, which can be signed in later;
-- **OpenAI (detected: `~/.codex` -> copy auth)** when a usable normal sign-in is found;
-- each existing named U-M profile for reconfiguration;
-- **New U-M GPT Toolkit Service**; and
-- **Done configuring providers**.
-
-The copy action creates only the new root's `auth.json`, refuses to overwrite one already there, and protects it with mode `0600`. OpenAI-only setup is valid. For a Toolkit profile setup asks for:
+When stdin or stdout is not a terminal, or curses cannot take control of the
+terminal, `init` retains the sequential text interface for automation and
+recovery. In either interface, adding a Toolkit profile asks for:
 
 - a short name containing lowercase letters, digits, hyphens, or underscores, such as `teaching` or `research-2026`;
 - a key from [U-M GPT Toolkit](https://toolkit.umgpt.umich.edu/); and
@@ -97,12 +107,24 @@ The copy action creates only the new root's `auth.json`, refuses to overwrite on
 
 The model selector shows everything advertised for that key. Models for which the installed Codex build has metadata are selectable; other entries remain visible but disabled. Compatible `gpt-5.6` models are checked by default.
 
-Finally, setup asks which Core the root should use:
+For a local endpoint, setup asks for the Responses API base URL (default `http://127.0.0.1:1337/v1`), an optional bearer API key, and the generation models to expose. During setup or reconfiguration it conditionally fetches this repository's [owned local-model catalog](catalog/v1/local-models.json), then reads the endpoint's `/models` response and joins records by exact, case-sensitive model ID. The picker labels entries as `tested`, `known`, or `unverified` and shows verified capability badges. Obvious embedding and reranking entries remain visible but disabled.
+
+The owned catalog request is HTTPS-only, has a 10-second timeout and 2 MiB limit, and never receives the endpoint credential. A valid response is cached below the launch root and refreshed with ETags. A failed refresh uses the last valid cache with a visible warning; with no cache, all endpoint models remain selectable but unverified. Reconfiguration preserves still-advertised selections and the prior default model.
+
+Local capabilities are deliberately conservative. Context is capped at the smaller positive value reported by the endpoint and the owned catalog. Vision, reasoning levels, and reasoning-summary support are written only when their dedicated probes passed. Standard Codex tools remain available through Core's local-model fallback, but only a passing function-call continuation probe earns the `tools tested` badge. A local model never inherits unrelated features merely because its slug resembles a bundled OpenAI model.
+
+The `l` action chooses which Core the root should use:
 
 1. **Dynamic Picker - all configured providers (recommended)**; or
 2. **Stock Core - one fixed provider (advanced)**.
 
-Choosing Dynamic Picker downloads and verifies that root's patched Core immediately. Choosing Stock Core asks which configured provider to fix for launches and uses the already-installed stock Codex executable. Run `init` again in the same root to add another service or change the Core/default provider. The short name becomes the exact profile name, descriptor filename, credential variable prefix, and Dynamic Picker namespace. For example, `teaching` creates `TEACHING_API_KEY` and models such as `teaching → gpt-5.6-terra`.
+After Save, choosing Dynamic Picker downloads and verifies that root's patched
+Core. Choosing Stock Core uses the already-installed stock Codex executable and
+the fixed provider selected in the TUI. Run `init` again in the same root to
+inspect or manage profiles and change the Core/default provider. The short name
+becomes the exact profile name, descriptor filename, credential variable
+prefix, and Dynamic Picker namespace. For example, `teaching` creates
+`TEACHING_API_KEY` and models such as `teaching → gpt-5.6-terra`.
 
 ## Launch Roots
 
@@ -171,11 +193,14 @@ codex-configure run openai/desktop
 # A named U-M profile, stock Core
 codex-configure run teaching/cli
 codex-configure run teaching/desktop
+
+# A local Responses profile, stock Core
+codex-configure run local/cli
 ```
 
 Before launching, this mode replaces the active `$CODEX_HOME/config.toml` with a configuration for the selected provider. The change is not automatically undone when the CLI or desktop app exits; it remains active until a later `codex-configure run` selects another configuration or `codex-configure restore` is run. The command prints the profile directory it used and removes any inherited `CODEX_CLI_PATH` so a global shell setting cannot accidentally select the patched Core.
 
-Only the selected U-M key is added to that child process. OpenAI launches receive no U-M credentials.
+Only the selected external provider's declared key is added to that child process. An unkeyed local endpoint receives no credential, and OpenAI launches receive no external credentials.
 When returning from Dynamic Picker, a saved OpenAI-qualified model such as `openai → gpt-5.6-sol` is unqualified for stock Core; an external-qualified model is omitted so stock OpenAI can choose its own supported default. The launcher also recognizes the former `::` separator while upgrading an existing root.
 
 On macOS, `codex-configure` launches the executable inside `ChatGPT.app` so the selected environment reaches Codex Core. Set `CODEX_DESKTOP_COMMAND` if the application is installed somewhere unusual. On Linux, the normal command is `chatgpt`; the same override supports another compatible desktop command or VM flags.
@@ -234,6 +259,7 @@ The existing picker shows qualified entries such as:
 openai → gpt-5.6-sol
 teaching → gpt-5.6-terra
 research → gpt-5.6-luna
+local → qwen2.5-coder-7b-instruct-q6_k
 ```
 
 You can change provider/model between turns in one task. The working directory, execution host, permissions, and semantic conversation stay with the task. Provider-private reasoning data is discarded at a provider boundary because another provider cannot safely consume it.
@@ -243,7 +269,7 @@ The patched Core builds its picker catalog at startup from:
 - the current built-in OpenAI catalog; and
 - each valid `$CODEX_HOME/codex-configure/providers.d/*.toml` descriptor and its required JSON catalog under `$CODEX_HOME/codex-configure/catalogs/`.
 
-A missing or malformed external catalog is warned about and skipped. The patched Core does not query arbitrary provider `/models` endpoints or invent missing Codex metadata.
+A missing or malformed external catalog is warned about and skipped. The patched Core does not query arbitrary provider `/models` endpoints at startup. U-M entries use complete bundled Codex metadata; local entries use Core's conservative unknown-model metadata plus only the context, vision, and reasoning fields certified during setup.
 
 `CODEX_CLI_PATH` is an observed desktop integration hook, not a documented stable OpenAI interface. Re-run the documented acceptance checks after updating the desktop app or refreshing the pinned Core patch.
 
@@ -259,6 +285,7 @@ $CODEX_HOME/
     |-- .env                          # provider keys, mode 0600
     |-- providers.d/<shortname>.toml  # provider configuration, no secrets
     |-- catalogs/<shortname>.json     # selected Codex model metadata
+    |-- cache/                         # last valid owned local-model catalog
     |-- profiles/                     # stock-Core launch profiles
     |-- base/                         # original and maintained config snapshots
     `-- recovery/                     # last-known-good transaction state
@@ -268,6 +295,27 @@ On first initialization, the existing `config.toml` is preserved before any prof
 
 The `.env` file is created with mode `0600`, and tool-owned directories use mode `0700`. An environment variable with the expected name can override a stored key for one launch.
 
+## Local Catalog Maintenance
+
+The frozen remote schema is `catalog/v1/local-models.json`. It is source data in this repository rather than wheel package data, so reviewed record additions become available after a normal commit to `main`; schema or Core-interface changes still require a software release. [Models.dev](https://github.com/anomalyco/models.dev) supplies general metadata, but installed clients contact only the owned catalog.
+
+The standard-library maintainer tool keeps changes explicit and reviewable:
+
+```bash
+python3 scripts/known_model_catalog.py import \
+  --model ENDPOINT_ID=MODELS_DEV_ID
+python3 scripts/known_model_catalog.py probe \
+  --base-url http://127.0.0.1:1337/v1 \
+  --model ENDPOINT_ID \
+  --runtime-name llama.cpp \
+  --runtime-version VERSION \
+  --api-key-env LOCAL_API_KEY > probe.json
+python3 scripts/known_model_catalog.py certify --report probe.json
+python3 scripts/known_model_catalog.py validate
+```
+
+`probe` always checks `/models`, streamed text, and a complete function-call/function-output continuation. Vision, named reasoning efforts, and reasoning summaries are opt-in checks. Credentials are accepted only through the named environment variable and are never printed or written to the report. Review the source metadata and sanitized evidence before committing the catalog.
+
 ## Check And Recover
 
 Inspect the managed configuration without changing it:
@@ -276,6 +324,10 @@ Inspect the managed configuration without changing it:
 codex-configure doctor
 ```
 
+`doctor` reports the exact current directory's launch root even before it has
+been initialized. It never creates `.codex-configure/` for this check and never
+searches a parent directory or a normal/global Codex home.
+
 Restore the maintained OpenAI base, or the immutable first-run snapshot:
 
 ```bash
@@ -283,7 +335,18 @@ codex-configure restore
 codex-configure restore --original
 ```
 
-Named stock-profile switching, stock OpenAI selection, and restore commands refuse to proceed while a known Codex or ChatGPT process is running. Dynamic Picker launches do not require all clients to stop, although an already-running desktop process keeps the environment with which it started. Profile changes also reject unexpected outside edits to routing fields instead of overwriting them. Unrelated settings written by Codex are retained.
+On Linux, named stock-profile switching and stock OpenAI selection block only a
+live Codex or ChatGPT client that shares the target `CODEX_HOME` or launch root.
+An unrelated normal/global client or a client from another root does not block
+the launch. A client whose state cannot be attributed safely remains blocking,
+and platforms without reliable process-environment attribution retain the
+conservative all-client guard. Restore remains conservative because it rewrites
+managed state without a target launch boundary. `doctor` reports live clients
+as an advisory separate from the managed-configuration result. Dynamic Picker
+launches do not require all clients to stop, although an already-running desktop
+process keeps the environment with which it started. Profile changes also reject
+unexpected outside edits to routing fields instead of overwriting them.
+Unrelated settings written by Codex are retained.
 
 ## Troubleshooting
 
